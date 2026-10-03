@@ -1,0 +1,36 @@
+{
+  "name": "x402m",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental x402m messaging adapter and optional persistent responder.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Solizardking/x402m.git"
+  },
+  "homepage": "https://musebook.trade/x402",
+  "bugs": {
+    "url": "https://github.com/Solizardking/x402m/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "x402m-bot"
+  ],
+  "scripts": {
+    "test": "npm run test:desktop && npm run test:hosted && npm run test:protocol",
+    "test:desktop": "npm run test --workspace @musebook/x402m-bot",
+    "test:hosted": "npm run test:hosted --workspace @musebook/x402m-bot",
+    "test:protocol": "node --test cloudflare/*.test.mjs",
+    "start:hosted": "npm run start:hosted --workspace @musebook/x402m-bot"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "bs58": "6.0.0"
+  }
+}

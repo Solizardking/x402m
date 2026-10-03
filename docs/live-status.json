@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-02T23:49:02.877335+00:00",
+  "verification": "Read-only public GET requests; no enrollment, identity access, message, inference, wallet signature or payment. HTML 200 is not JSON capability discovery. checkedAt records completion of the follow-up route sweep; responses can vary between checks.",
+  "routes": [
+    {
+      "path": "/x402",
+      "status": 200,
+      "finalURL": "https://musebook.trade/x402",
+      "contentType": "text/html; charset=utf-8"
+    },
+    {
+      "path": "/x402/protocol",
+      "status": 200,
+      "finalURL": "https://musebook.trade/x402/protocol",
+      "contentType": "text/html; charset=utf-8"
+    },
+    {
+      "path": "/x402m",
+      "status": 200,
+      "finalURL": "https://bot.musebook.trade/x402m",
+      "contentType": "text/html"
+    },
+    {
+      "path": "/x402m/setup",
+      "status": 200,
+      "finalURL": "https://musebook.trade/x402m/setup",
+      "contentType": "text/html; charset=utf-8"
+    },
+    {
+      "path": "/api/x402/supported",
+      "status": 200,
+      "finalURL": "https://musebook.trade/api/x402/supported",
+      "contentType": "application/json",
+      "summary": {
+        "kinds": [
+          {
+            "x402Version": 1,
+            "scheme": "exact",
+            "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+          },
+          {
+            "x402Version": 1,
+            "scheme": "exact",
+            "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "upto",
+            "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:1"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:8453"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:43114"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:42161"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:10"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:137"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:130"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:146"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:480"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:1329"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:999"
+          },
+          {
+            "x402Version": 2,
+            "scheme": "exact",
+            "network": "eip155:5042"
+          }
+        ],
+        "extensions": [],
+        "unavailableProviders": [
+          "hosted-testnet",
+          "hosted-mainnet"
+        ]
+      }
+    },
+    {
+      "path": "/api/x402/batch/ping",
+      "status": 404,
+      "finalURL": "https://musebook.trade/api/x402/batch/ping",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "/.well-known/x402-facilitator",
+      "status": 403,
+      "finalURL": "https://musebook.trade/.well-known/x402-facilitator",
+      "contentType": "application/json; charset=utf-8"
+    },
+    {
+      "path": "/x402m.md",
+      "status": null,
+      "errorClass": "TimeoutError"
+    },
+    {
+      "path": "/api/x402/receipts",
+      "status": 404,
+      "finalURL": "https://musebook.trade/api/x402/receipts",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "/api/x402/pulse",
+      "status": 404,
+      "finalURL": "https://musebook.trade/api/x402/pulse",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "/api/x402m/discovery",
+      "status": 200,
+      "finalURL": "https://musebook.trade/api/x402m/discovery",
+      "contentType": "application/json",
+      "summary": {
+        "protocol": "x402m/1",
+        "status": "experimental",
+        "transport": "https-polling",
+        "execute": "https://musebook.trade/api/auth/capability/execute",
+        "directory": "https://musebook.trade/api/x402m/agents",
+        "delivery": "at-least-once-until-ack",
+        "retentionSeconds": 604800,
+        "federation": false,
+        "capabilityNames": [
+          "x402m.register",
+          "x402m.send",
+          "x402m.inbox",
+          "x402m.ack",
+          "x402m.link"
+        ],
+        "advertisedFacilitatorURL": "https://musebook.trade/.well-known/x402-facilitator"
+      }
+    },
+    {
+      "path": "/.well-known/x402m",
+      "status": 200,
+      "finalURL": "https://musebook.trade/.well-known/x402m",
+      "contentType": "application/json",
+      "summary": {
+        "protocol": "x402m/1",
+        "status": "experimental",
+        "transport": "https-polling",
+        "execute": "https://musebook.trade/api/auth/capability/execute",
+        "directory": "https://musebook.trade/api/x402m/agents",
+        "delivery": "at-least-once-until-ack",
+        "retentionSeconds": 604800,
+        "federation": false,
+        "capabilityNames": [
+          "x402m.register",
+          "x402m.send",
+          "x402m.inbox",
+          "x402m.ack",
+          "x402m.link"
+        ],
+        "advertisedFacilitatorURL": "https://musebook.trade/.well-known/x402-facilitator"
+      }
+    },
+    {
+      "path": "/api/x402m/agents",
+      "status": 200,
+      "finalURL": "https://musebook.trade/api/x402m/agents",
+      "contentType": "application/json"
+    },
+    {
+      "path": "/api/v1/x402m/tracking?limit=1",
+      "status": 200,
+      "finalURL": "https://musebook.trade/api/v1/x402m/tracking?limit=1",
+      "contentType": "application/json"
+    },
+    {
+      "path": "/.well-known/musebot.json",
+      "status": 200,
+      "finalURL": "https://musebook.trade/.well-known/musebot.json",
+      "contentType": "application/json"
+    },
+    {
+      "path": "/SKILL.md",
+      "status": 200,
+      "finalURL": "https://musebook.trade/SKILL.md",
+      "contentType": "text/markdown; charset=utf-8"
+    },
+    {
+      "path": "/.well-known/agent-configuration",
+      "status": 200,
+      "finalURL": "https://musebook.trade/.well-known/agent-configuration",
+      "contentType": "application/json"
+    }
+  ],
+  "browserObservations": {
+    "checkedAt": "2026-10-02T23:23:58Z",
+    "writesBlocked": true,
+    "pages": [
+      {
+        "path": "/x402",
+        "title": "x402 payments - Musebook",
+        "primaryHeading": "Connect services.Pay with USDC."
+      },
+      {
+        "path": "/x402/protocol",
+        "title": "x402m \u2014 the m2m x402 meta protocol - Musebook",
+        "primaryHeading": "x402m \u2014 the m2m x402 meta protocol"
+      },
+      {
+        "path": "/x402m",
+        "finalURL": "https://bot.musebook.trade/x402m",
+        "primaryHeading": "Give your agent an address."
+      }
+    ]
+  },
+  "initialObservations": {
+    "checkedAt": "2026-10-02T23:23:20Z",
+    "routes": [
+      {
+        "path": "/.well-known/x402-facilitator",
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "usableFacilitatorDescriptor": false
+      },
+      {
+        "path": "/x402m.md",
+        "status": 404,
+        "contentType": "application/json"
+      }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+node_modules/
+*.sqlite*
+*.private.jwk
+.env*
+!.env.example
+
+# Local enrollment and HTTP bridge state.
+identity/
+mcp.json
+http-bridge.json
+host.json
+registration.json
+
+# Local wallet vault and ORE executor state.
+.ows/
+.ore-miner/
+executor.json
+config.json
+state.json
+state.json.tmp
+lock
+stop
+process.log
