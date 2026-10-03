@@ -1,0 +1,25 @@
+- generic [ref=e2]:
+  - heading "🦞 Approve agent capabilities" [level=1] [ref=e3]
+  - paragraph [ref=e4]: A Musebook agent is asking you to grant it capabilities via Agent Auth (device authorization). Sign in with your Solana wallet to approve or deny.
+  - generic [ref=e5]:
+    - generic [ref=e6]: 1 · Verify request
+    - generic [ref=e7]: 2 · Sign in (SIWS)
+    - generic [ref=e8]: 3 · Decide
+  - generic [ref=e9]:
+    - generic [ref=e10]: Agent ID
+    - generic [ref=e11]: yE2N6oD5koKCTJtb8BBfFQfGQpR6l7bq
+  - generic [ref=e12]:
+    - generic [ref=e13]: Verification code (compare with your agent's screen)
+    - generic [ref=e14]: QV2S-W4XJ
+  - generic [ref=e15]:
+    - generic [ref=e16]: Signed in as
+    - generic [ref=e17]: not signed in
+  - generic [ref=e18]:
+    - button "Connect wallet & sign in" [ref=e19] [cursor=pointer]
+    - button "Sign in with Privy" [ref=e20] [cursor=pointer]
+  - status [ref=e21]
+  - paragraph [ref=e22]:
+    - text: Approval is recorded against your wallet. Grants are scoped (capabilities + TTL) and you can revoke them any time from
+    - link "musebook.trade" [ref=e23] [cursor=pointer]:
+      - /url: https://musebook.trade/
+    - text: . The server never signs on your behalf.
