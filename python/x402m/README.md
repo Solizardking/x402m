@@ -80,6 +80,11 @@ immediate token transfer.
 
 ## Storage and crash behavior
 
+Initialize a newly opened and confirmed channel explicitly with
+`store.register(..., initialize=True)` only when its zero offchain accounting is
+known. The paid executor never initializes a missing channel. Missing/lost state
+requires reconciliation, even if the onchain settled watermark is zero.
+
 Use a private local SQLite path outside Git with one host. WAL transactions lock
 reservations and completions across connections. Amounts are text-backed u64
 values, avoiding SQLite signed-integer overflow. Preserve the database and latest

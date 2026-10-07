@@ -144,6 +144,7 @@ async def test_paid_client_success_failure_replay_and_restart(channel, tmp_path)
     cid = derive_channel_id(config, req)
     path = tmp_path / "state.sqlite"
     store = ChannelStore(path)
+    store.register(cid, config, req, snapshot(cid, req), initialize=True)
     payment = {"x402Version": 2, "accepted": req, "payload": {"type": "voucher", "channelConfig": config, "voucher": voucher(keys[0], cid, 1000)}}
     calls = []
     async def handler():
@@ -172,7 +173,7 @@ def test_server_capacity_completion_and_durable_binding(channel, tmp_path):
     cid = derive_channel_id(config, req)
     path = tmp_path / "state.sqlite"
     store = ChannelStore(path)
-    store.register(cid, config, req, snapshot(cid, req, deposit=2000))
+    store.register(cid, config, req, snapshot(cid, req, deposit=2000), initialize=True)
     store.bind_receiver(MAINNET, cid, config["receiverAuthorizer"], "owner")
     with pytest.raises(SchemeError, match="delegated_unauthenticated"):
         store.bind_receiver(MAINNET, cid, config["receiverAuthorizer"], "other")
@@ -203,7 +204,7 @@ def test_parallel_connections_reserve_capacity_atomically(channel, tmp_path):
     cid = derive_channel_id(config, req)
     path = tmp_path / "state.sqlite"
     store = ChannelStore(path)
-    store.register(cid, config, req, snapshot(cid, req, deposit=1000))
+    store.register(cid, config, req, snapshot(cid, req, deposit=1000), initialize=True)
     store.close()
     def reserve(index):
         connection = ChannelStore(path)
@@ -222,6 +223,7 @@ async def test_server_handler_and_commit_failure_no_reexecution(channel, tmp_pat
     keys, req, config = server_mode(channel)
     cid = derive_channel_id(config, req)
     store = ChannelStore(tmp_path / "state.sqlite")
+    store.register(cid, config, req, snapshot(cid, req), initialize=True)
     payment = {"x402Version": 2, "accepted": req, "payload": {"type": "authorization", "channelConfig": config, "authorization": proof(keys[0], config, req)}}
     calls = []
     async def handler():
@@ -239,3 +241,16 @@ def test_discovery_offsets(channel):
     _, req, config = channel
     assert discovery_filters("payer", config["payer"])["filters"][1]["memcmp"]["offset"] == 88
     assert discovery_filters("feePayer", req["extra"]["feePayer"])["filters"][1]["memcmp"]["offset"] == 216
+
+
+def test_missing_offchain_state_never_auto_initializes(channel, tmp_path):
+    _, req, config = channel
+    cid = derive_channel_id(config, req)
+    store = ChannelStore(tmp_path / "state.sqlite")
+    with pytest.raises(SchemeError, match="channel_state"):
+        store.register(cid, config, req, snapshot(cid, req))
+    store.register(cid, config, req, snapshot(cid, req), initialize=True)
+    store.mark_closing(cid)
+    with pytest.raises(SchemeError, match="channel_closing"):
+        store.register(cid, config, req, snapshot(cid, req))
+    store.close()

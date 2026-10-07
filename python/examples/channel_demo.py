@@ -28,6 +28,7 @@ async def main():
         return "offline fixture result", "1000"
     with tempfile.TemporaryDirectory(prefix="x402m-channel-demo-") as directory:
         store = ChannelStore(Path(directory) / "channels.sqlite")
+        store.register(cid, config, req, fixture, initialize=True)
         try:
             result, receipt = await execute_paid_request(payment, req, fixture, store, handler, 1000)
             print(result)

@@ -62,7 +62,7 @@ class ChannelStore:
         row = self.db.execute("SELECT * FROM receiver_bindings WHERE network=? AND channel=?", (network, channel_id)).fetchone()
         return dict(row) if row else None
 
-    def register(self, channel_id, config, requirements, snapshot):
+    def register(self, channel_id, config, requirements, snapshot, *, initialize=False):
         """Caller supplies a verified fresh snapshot. Lost accounting fails closed."""
         from .batch import derive_channel_id
         if derive_channel_id(config, requirements) != channel_id or snapshot.channel_id != channel_id:
@@ -76,12 +76,16 @@ class ChannelStore:
         with self.transaction():
             row = self.db.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
             if row is None:
-                if snapshot.settled != 0:
+                if initialize is not True or snapshot.settled != 0:
                     raise SchemeError("channel_state")  # Importing a recovered channel needs explicit accounting reconciliation.
                 self.db.execute("INSERT INTO channels VALUES(?,?,?,?,?,NULL,?)", (channel_id, binding, str(snapshot.deposit), "0", snapshot.status, str(snapshot.settled)))
             else:
                 if row["binding"] != binding or int(row["charged"]) < snapshot.settled:
                     raise SchemeError("channel_state")
+                if snapshot.settled < int(row["settled"]) or snapshot.deposit < int(row["deposit"]):
+                    raise SchemeError("channel_state")
+                if row["status"] != "Open" and snapshot.status == "Open":
+                    raise SchemeError("channel_closing")
                 reserved = sum(int(item[0]) for item in self.db.execute("SELECT ceiling FROM operations WHERE channel=? AND status='running'", (channel_id,)))
                 if int(row["charged"]) + reserved > snapshot.deposit:
                     raise SchemeError("cumulative_exceeds_deposit")

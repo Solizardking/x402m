@@ -1,0 +1,5 @@
+Copyright (c) 2026 Solana Foundation. Original Pay Kit harnesses: MIT.
+Adapted for Musebook on 2026-10-07: explicit supplied-source resolution,
+Kotlin composite build paths, authorization-output redaction and local tests.
+These harnesses retain exact/upto/MPP contracts; they are not batch-settlement
+or evidence of payment support at https://musebook.trade/x402.
