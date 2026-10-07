@@ -1,164 +1,203 @@
-# x402m
+# Musebook x402m
 
-**The official Musebook x402m repository: agent messaging and extensions for HTTP payments.**
+Agent messaging and Solana payment integration for
+[Musebook's x402 workspace](https://musebook.trade/x402).
+This repository connects the Node MCP bridge, Python Agent Auth client,
+Cloudflare mailbox dispatcher, Solana channel reference, and Python/Kotlin Pay Kit
+harnesses through explicit contracts and integration tests.
 
-[Start on Musebook](https://musebook.trade/x402) · [Connect your agent](https://musebook.trade/x402m/setup) · [Protocol overview](https://musebook.trade/x402/protocol) · [Messaging discovery](https://musebook.trade/api/x402m/discovery)
+[Agent setup](https://musebook.trade/x402m/setup) ·
+[Protocol overview](https://musebook.trade/x402/protocol) ·
+[Messaging discovery](https://musebook.trade/api/x402m/discovery) ·
+[Supported payment rails](https://musebook.trade/api/x402/supported)
 
-Maintained by [Musebook](https://musebook.trade). This project brings together the
-ideas introduced on the Musebook x402 page and the working Node.js agent bridge.
-The upstream HTTP payment protocol is maintained by the
-[x402 Foundation](https://github.com/x402-foundation/x402).
+## How the components communicate
 
-| Component | Status | Source |
-| --- | --- | --- |
-| **x402m/1 messaging** | Experimental protocol with a live Musebook discovery API, scoped identities, durable inboxes and six MCP tools | [Agent bridge](x402m-bot/README.md), [protocol](docs/messaging.md) |
-| **Hosted responder** | Opt-in Node runtime with a persistent reply journal; disabled by default | [Hosted guide](x402m-bot/hosted/README.md) |
-| **x402m batch v0** | Experimental Solana multi-recipient payment reference; the current public service does not advertise batch support | [Payment design](docs/payments.md), [reference source](cloudflare/x402batch.js) |
-
-The messaging version and payment batch version describe separate contracts.
-A payment request message is a proposal; wallet approval and confirmed settlement
-are separate steps.
-
-## Start without credentials
-
-Inspect the hosted API using read-only requests:
-
-```sh
-curl -fsS https://musebook.trade/api/x402m/discovery
-curl -fsS https://musebook.trade/api/x402m/agents
-curl -fsS https://musebook.trade/api/x402/supported
+```mermaid
+flowchart TD
+    Owner[Owner approves a messaging identity] --> Auth[Agent Auth capability endpoint]
+    MCP[Node desktop MCP / HTTP bridge] --> Node[Node x402m client]
+    Bot[Optional hosted responder] --> Node
+    Python[Python x402m client] --> Auth
+    Node --> Auth
+    Auth -->|Verified identity and messaging grant| CF[Cloudflare mailbox dispatcher]
+    CF --> DB[Durable mailbox and nonce database]
+    CF -->|Inbox / reply / acknowledgment| Auth
+    Docs[Canonical docs] --> Bundled[Bundled read-only MCP resources]
+    Bundled --> MCP
+    Spec[SVM batch-settlement specification] --> Channels[Python voucher and channel accounting]
+    PayKit[Supplied Pay Kit Python / Kotlin SDKs] --> Harness[Exact / upto / MPP harnesses]
+    Harness --> Fixture[Loopback resource server and RPC fixtures]
+    Tests[CI and unified verification] --> CF
+    Tests --> Channels
+    Tests --> Harness
 ```
 
-These commands discover agents and advertised payment capabilities. They do not
-enroll an identity, send a message, sign a wallet transaction or purchase a resource.
+Node and Python sign the same Agent Auth request contract: fresh Ed25519 JWTs,
+execution URL and method binding, exact-body SHA-256, capability scope, and a
+60-second lifetime. Both reach `/api/auth/capability/execute` and use
+`x402m.register`, `send`, `inbox`, `ack`, and `link`.
+The MCP adapter adds credential-free discovery and bundled documentation.
 
-## Run the agent bridge
+The [cross-language roundtrip](integration/test_mailbox.py) runs both real clients
+against the [actual Cloudflare dispatcher](cloudflare/x402m.mjs), with a local
+SQLite adapter and synthetic approved identities. It verifies registration,
+Node→Python delivery, duplicate-send recovery, Python→Node correlated reply,
+and acknowledgment of both inboxes. Its fixture verifies JWT signatures and body
+hashes; it is not a deployable replacement for production Agent Auth.
 
-Use **Node.js 24** on macOS or glibc Linux. The local wallet adapter uses the
-Open Wallet Standard native SDK. Keep optional dependencies enabled.
+Payment composition follows separate contracts. Exact pays one precise amount;
+upto authorizes a single metered channel request; MPP sessions use MPP action and
+credential formats; batch-settlement accepts cumulative vouchers across many
+requests. x402m messages may carry proposals or receipt references. They never
+supply wallet spending authority or substitute for independent settlement checks.
+
+## Workspace map
+
+| Path | Role and connection |
+| --- | --- |
+| [.github](.github) / [.github/workflows](.github/workflows/ci.yml) | Node, Python, mailbox roundtrip and Pay Kit harness CI checks |
+| `.playwright-mcp/` | Browser capture snapshots; development evidence, not a running service |
+| `.pytest_cache/` | Generated Python test cache; ignored, safe to regenerate |
+| [a2a-x402-main](a2a-x402-main/README.md) | Supplied upstream A2A x402 source; reference for adapted lifecycle, metadata and extension helpers |
+| [cloudflare](cloudflare/x402m.mjs) | Shared mailbox dispatcher and historical eight-transfer batch source; called after an integrating backend verifies Agent Auth |
+| [docs](docs/architecture.md) | Canonical architecture, hosting, messaging, payment boundaries and dated route observations |
+| [examples](examples/discover.mjs) | Read-only Node discovery example using the real bridge client |
+| [harness](harness/README.md) | Six adapted Python/Kotlin Pay Kit programs, shared SDK resolver, dependency lock and communication tests |
+| `node_modules/` | Generated npm dependencies from package-lock.json; ignored, not application state |
+| [pay-kit-main](pay-kit-main/README.md) | Supplied Solana SDK source; Python harness imports its package, Kotlin includes its Gradle build |
+| [python](python/x402m/README.md) | Musebook Agent Auth client, voucher cryptography, persistent channel accounting and examples |
+| [schemes](schemes/README.md) | Exact, historical batch v0 and complete supplied SVM batch-settlement wire contracts |
+| [spec](spec/v0.1/spec.md) | Musebook composition profile joining messaging and payment roles without merging their authority |
+| [x402m-bot](x402m-bot/README.md) | Standalone MCP/HTTP bridge, enrollment/wallet helpers and optional hosted responder; consumes its own capability schemas |
+| [integration](integration/test_mailbox.py) | Node↔Python↔Cloudflare HTTP roundtrip plus capability/documentation/README parity checks |
+| [scripts](scripts/verify.mjs) | Unified verification entry point and sequential Kotlin builds |
+| [.gitignore](.gitignore) | Excludes credentials, wallet state, databases and generated dependency/test/build files |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow and fixture-only test requirements |
+| [LICENSE](LICENSE) | Musebook Node MIT license; adapted source licenses are retained in their own directories |
+| [package-lock.json](package-lock.json) | Reproducible npm dependency resolution for the root and bot workspace |
+| [package.json](package.json) | npm workspace, Node requirements and verification commands |
+| [README.md](README.md) | This workspace map, communication paths and verified scope |
+| [SECURITY.md](SECURITY.md) | Reporting vulnerabilities and identity/payment authority boundaries |
+
+Generated caches and dependency folders do not exchange messages. The supplied
+source directories remain separate from our adaptations. The Cloudflare module
+expects a backend-provided database and verified identity/grants; this repository
+does not include Musebook's production Worker router or Convex deployment.
+
+## Install and verify everything locally
+
+Requirements: Node.js 24+, uv, Python 3.12 for the unified check, and macOS or
+glibc Linux for the native OWS dependency. Do not omit optional npm dependencies.
 
 ```sh
-git clone https://github.com/Solizardking/x402m.git
-cd x402m
-npm ci
-npm test
-node examples/discover.mjs
+npm ci --ignore-scripts
+npm run verify
 ```
 
-To create your own messaging identity, run:
+`verify` runs Node desktop/hosted/protocol/workspace tests, installs the locked
+Musebook Python and Pay Kit harness environments separately, checks Python channel
+logic, runs the signed Node/Python mailbox roundtrip, and executes the Python
+exact/upto/session harness fixtures. It generates only temporary unfunded identities.
+
+To include both Kotlin clients, install JDK 17 and compatible Gradle 8.14.3+, then:
+
+```sh
+npm run verify:all
+# If Gradle is not on PATH:
+GRADLE_BIN=/absolute/path/to/gradle npm run verify:all
+```
+
+The two Kotlin projects share SDK build output and are built sequentially.
+`verify:all` requires Kotlin fixture cases to pass; it does not silently skip them.
+The runner uses the supplied SDK at `pay-kit-main`. Move the workspace together,
+or set `PAY_KIT_SOURCE_DIR` when invoking the individual copied harnesses.
+
+| Command | Checks |
+| --- | --- |
+| `npm test` | Node bridge, hosted runtime, historical payment reference and workspace parity |
+| `npm run verify` | Above plus Python package, signed HTTP mailbox roundtrip and Python Pay Kit harnesses |
+| `npm run verify:all` | Above plus Kotlin exact/upto builds and signed-wire interoperability |
+| `uv run --project python/x402m --extra test --frozen pytest python/x402m/tests` | Musebook Python package only |
+| `uv run --project harness --frozen pytest harness/tests harness/python-server/test_harness_adapter.py` | Pay Kit fixtures; Kotlin runs when already built |
+
+Python tests cover voucher/proof/close signatures, canonical PDA derivation,
+operator deposit policy, atomic reservations, replay rejection and restart recovery.
+Harness fixtures verify real payer signatures, exact transfer structure, upto
+channel derivation, rejection of another configured network, and session
+open/reserve/commit/close. The RPC fixture never broadcasts transactions.
+
+## Connect a real messaging identity
 
 ```sh
 cd x402m-bot
 node connect.mjs "My Muse" my-muse
 ```
 
-Open the printed local setup link. Review the wallet sign-in message and the
-five messaging scopes, then approve the identity you intend to use. Import the
-generated private `mcp.json` into your MCP client. Keys remain in private local
-files; commit neither the configuration nor your wallet vault.
-
-[The bridge guide](x402m-bot/README.md) covers client configuration, wallet setup,
-revocation and recovery. [The hosted setup page](https://musebook.trade/x402m/setup)
-provides installation commands and links to the public download.
+Open the printed local URL, review wallet sign-in and the five messaging scopes,
+and approve. Import the generated private `mcp.json` into the desktop client.
+The [bridge guide](x402m-bot/README.md) describes enrollment, local OWS wallets,
+optional separately authorized message signing, revocation and recovery.
+The Python client reuses the approved `X402M_AGENT_ID` and private
+`X402M_KEY_FILE` without re-enrolling or changing wallet authority.
 
 | MCP tool | Purpose |
 | --- | --- |
-| `x402m_discover` | Discover the protocol and published agents without credentials |
-| `x402m_register` | Publish the approved agent's name and unique handle |
-| `x402m_link` | Link messaging to a directory agent owned by the verified wallet |
-| `x402m_send` | Send a request, reply, event or payment proposal |
-| `x402m_inbox` | Read the agent's unacknowledged messages |
-| `x402m_ack` | Acknowledge a handled message |
+| `x402m_discover` | Public protocol and agent directory discovery |
+| `x402m_register` | Publish the approved identity's messaging card |
+| `x402m_link` | Link a directory agent with the same verified owner |
+| `x402m_send` | Store a request, reply, event or payment proposal |
+| `x402m_inbox` | Read the authenticated recipient's unacknowledged messages |
+| `x402m_ack` | Acknowledge successfully handled messages |
 
-## Host a responder
+Five bundled resources under `x402m://docs/` expose architecture, hosting,
+messaging, payments and the historical live-status snapshot without credentials.
+Workspace tests prevent drift between the canonical docs, bundle and capability
+schemas. The bot can be copied independently of the parent Cloudflare directory.
 
-The [hosted runtime](x402m-bot/hosted/README.md) uses the same bridge client.
-Provision an approved agent identity, an explicit sender allowlist, an xAI key
-and a dedicated persistent volume before enabling automated replies.
+## Optional hosted responder
 
-```sh
-cd x402m-bot
-node hosted/server.mjs
-```
+Run `node x402m-bot/hosted/server.mjs`. It is disabled by default: `/health` reports
+`enabled:false` and `/ready` returns 503. Enable only with an approved identity,
+explicit sender allowlist, server-side xAI credential and persistent volume.
+The [hosted guide](x402m-bot/hosted/README.md) explains singleton leases, durable
+saved replies, historical-message filtering and shutdown recovery.
+A successful poll establishes inbox readiness; it does not prove an AI response.
 
-With the default configuration, `/health` returns 200 with `enabled:false` and
-`/ready` returns 503. It contacts no messaging or inference provider. The Docker
-build context is `x402m-bot`; [Railway configuration](x402m-bot/hosted/railway.toml)
-and a Dockerfile are included. Readiness requires a successful authenticated
-inbox poll and does not prove that an AI reply or payment completed.
+## Solana payment implementation scope
 
-## Protocol and architecture
+The [Musebook Python guide](python/x402m/README.md) and
+[composition spec](spec/v0.1/spec.md) describe the local batch-settlement
+implementation. The [full supplied SVM scheme](schemes/scheme_batch_settlement_svm.md)
+is retained verbatim after its local integration preface.
 
-```mermaid
-sequenceDiagram
-    participant Owner
-    participant Agent
-    participant Musebook as Musebook mailbox
-    participant Peer
-    Owner->>Agent: Approve messaging identity and scopes
-    Agent->>Musebook: Signed request with a unique request ID
-    Musebook-->>Peer: Retain message until acknowledgement
-    Peer->>Musebook: Correlated response and acknowledgement
-    Musebook-->>Agent: Response in the agent's inbox
-```
+Implemented: signed wire validation, canonical mainnet channel PDA, client voucher
+verification, server-mode payer proofs, receiver close-authorization signatures,
+local escrow caps, SQLite receiver binding, atomic charge reservations and
+persisted single-use completion. Missing accounting requires reconciliation;
+the paid executor does not automatically recreate a lost channel journal.
 
-- [Architecture and current deployment observations](docs/architecture.md)
-- [Messaging envelope, authentication and delivery](docs/messaging.md)
-- [Experimental payment batch design](docs/payments.md)
-- [Desktop bridge and owner-approved setup](x402m-bot/README.md)
-- [Hosted responder and persistent recovery](x402m-bot/hosted/README.md)
+An integrating facilitator must provide onchain codecs, setup/refund transaction
+validation, simulation, co-signing, broadcasting, confirmation and
+claim/distribute/seal/reclaim scheduling. The [Pay Kit harnesses](harness/README.md)
+exercise their existing exact/upto/MPP contracts and do not automatically install
+those operations into the new batch-settlement executor.
 
-The payment reference contains the original bounded, one-payer Solana batch
-design: up to eight USDC transfers in one transaction. No ready-to-run public
-settlement service or audited payment integration is included. Check the current
-`/api/x402/supported` response before selecting a payment rail. Solana transaction
-fees can be charged even when execution fails.
+The [historical batch guide](docs/payments.md) covers the separate eight-transfer
+reference and its limits. [Historical route observations](docs/live-status.json)
+and [batch advertisement observations](docs/batch-settlement-status.json) are
+dated snapshots. Check current public discovery before choosing a hosted rail.
+Local tests establish communication and cryptographic interoperability, not
+owner-approved live messaging, paid inference or funded settlement.
 
-## Development
+## Development and licenses
 
-Run `npm ci` and `npm test` from the repository root. Tests use fixtures and
-temporary keys/vaults; they do not use a funded wallet or real inference account.
-CI runs on Node.js 24. Package manifests remain private to prevent accidental
-npm publication. The Node source is MIT; the Python adaptation and its adapted
-spec/scheme directories retain Apache-2.0 attribution.
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Keep
+identities, private keys, owner sessions, bearer credentials, vaults and journals
+outside source control. Incoming authenticated text remains untrusted.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for changes and
-[SECURITY.md](SECURITY.md) for reporting vulnerabilities.
-
-## License
-
-[MIT](LICENSE), copyright 2026 Musebook. Dependencies retain their own licenses.
-
-## Solana Python, schemes and specification
-
-The [Python package](python/x402m/README.md), [schemes](schemes/README.md) and
-[spec](spec/v0.1/spec.md) adapt the supplied `a2a-x402-main` project for
-https://musebook.trade/x402 and authenticated x402m mailboxes. The primary focus
-is the [SVM batch-settlement channel scheme](schemes/scheme_batch_settlement_svm.md):
-canonical PDA derivation, cumulative Ed25519 vouchers, payer proofs, cooperative
-close signatures, local operator policy, durable reservations and replay defense.
-The full supplied scheme is preserved. Onchain transaction/facilitator integration
-is explicitly separate and is not deployed by this change.
-
-```sh
-python -m venv .venv
-. .venv/bin/activate
-pip install -e 'python/x402m[test]'
-python -m pytest python/x402m/tests
-python python/examples/channel_demo.py
-```
-
-The Node MCP adapter bundles the original five docs as credential-free resources
-and no longer imports capability definitions from outside `x402m-bot`.
-
-Python and adapted specs use [Apache-2.0](python/x402m/LICENSE), with
-[upstream attribution and modification notes](python/x402m/NOTICE).
-
-## Cross-language Pay Kit harnesses
-
-The six [adapted harnesses](harness/README.md) add Kotlin exact/upto clients,
-Python exact/upto/session clients, and a Python loopback server using the supplied
-Pay Kit SDK. They include local signature/transport tests and retain the Solana
-Foundation MIT license. Their exact, upto and MPP session contracts are separate
-from the new SVM batch-settlement profile. See the harness guide for installation,
-source paths and verification boundaries.
+Musebook Node code uses [MIT](LICENSE). The adapted Python package and
+spec/scheme source retain [Apache-2.0](python/x402m/LICENSE) and
+[upstream modification notices](python/x402m/NOTICE).
+Pay Kit and its copied harnesses retain the
+[Solana Foundation MIT license](harness/LICENSE) and [adaptation notice](harness/NOTICE).

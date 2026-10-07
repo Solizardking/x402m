@@ -27,9 +27,8 @@ The supplied SDK is resolved by package layout instead of the outer `.git`
 directory. Set `PAY_KIT_SOURCE_DIR` to its absolute root when moved.
 
 ```sh
-uv venv --python 3.12 .venv-harness
-uv pip install --python .venv-harness/bin/python -e ./pay-kit-main/python pytest pytest-asyncio
-.venv-harness/bin/python -m pytest -p no:pytest_anchorpy harness/tests harness/python-server/test_harness_adapter.py
+uv sync --project harness --frozen --python 3.12
+harness/.venv/bin/python -m pytest harness/tests harness/python-server/test_harness_adapter.py
 ```
 
 Kotlin requires JDK 17 and Gradle 8.14.3+ compatible with Kotlin 2.3.21. Each
@@ -39,7 +38,7 @@ because both projects share that SDK's compiler output:
 ```sh
 gradle -p harness/kotlin-x402-client --no-daemon -Pkotlin.compiler.execution.strategy=in-process installDist
 gradle -p harness/kotlin-x402-upto-client --no-daemon -Pkotlin.compiler.execution.strategy=in-process installDist
-MUSEBOOK_TEST_KOTLIN=1 .venv-harness/bin/python -m pytest -p no:pytest_anchorpy harness/tests
+MUSEBOOK_TEST_KOTLIN=1 harness/.venv/bin/python -m pytest -p no:pytest_anchorpy harness/tests
 ```
 
 The Kotlin fixture cases skip when distributions are absent; the explicit test

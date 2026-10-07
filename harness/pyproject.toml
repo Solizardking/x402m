@@ -1,0 +1,12 @@
+[project]
+name = "musebook-paykit-harness"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["solana-pay-kit", "pytest>=8,<10", "pytest-asyncio>=0.25,<2"]
+
+[tool.uv.sources]
+solana-pay-kit = { path = "../pay-kit-main/python", editable = true }
+
+[tool.pytest.ini_options]
+addopts = "-p no:pytest_anchorpy"
+testpaths = ["tests", "python-server"]

@@ -20,11 +20,14 @@
     "x402m-bot"
   ],
   "scripts": {
-    "test": "npm run test:desktop && npm run test:hosted && npm run test:protocol",
+    "test": "npm run test:desktop && npm run test:hosted && npm run test:protocol && npm run test:workspace",
     "test:desktop": "npm run test --workspace @musebook/x402m-bot",
     "test:hosted": "npm run test:hosted --workspace @musebook/x402m-bot",
     "test:protocol": "node --test cloudflare/*.test.mjs",
-    "start:hosted": "npm run start:hosted --workspace @musebook/x402m-bot"
+    "start:hosted": "npm run start:hosted --workspace @musebook/x402m-bot",
+    "test:workspace": "node --test integration/workspace.test.mjs",
+    "verify": "node scripts/verify.mjs",
+    "verify:all": "node scripts/verify.mjs --kotlin"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",

@@ -26,10 +26,14 @@ jobs:
         python-version: ['3.10', '3.12']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
       - name: Test Python package
         run: |
           pipx run --spec uv uv sync --project python/x402m --extra test --frozen --python '${{ matrix.python-version }}'
-          python/x402m/.venv/bin/python -m pytest python/x402m/tests
+          python/x402m/.venv/bin/python -m pytest python/x402m/tests integration/test_mailbox.py
           python/x402m/.venv/bin/python python/examples/channel_demo.py
   pay-kit-harness:
     runs-on: ubuntu-latest
@@ -37,6 +41,20 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Test Python Pay Kit harnesses
         run: |
-          pipx run --spec uv uv venv --python 3.12 .venv-harness
-          pipx run --spec uv uv pip install --python .venv-harness/bin/python -e ./pay-kit-main/python pytest pytest-asyncio
-          .venv-harness/bin/python -m pytest -p no:pytest_anchorpy harness/tests harness/python-server/test_harness_adapter.py
+          pipx run --spec uv uv sync --project harness --frozen --python 3.12
+          harness/.venv/bin/python -m pytest harness/tests harness/python-server/test_harness_adapter.py -k "not kotlin"
+  communication-all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        with:
+          gradle-version: '8.14.3'
+      - run: npm ci --ignore-scripts
+      - name: Verify all communication, including Kotlin
+        run: |
+          pipx install uv
+          env JAVA_HOME="$JAVA_HOME_17_X64" npm run verify:all
