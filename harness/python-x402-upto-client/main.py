@@ -85,6 +85,9 @@ async def _run() -> None:
             )
             return
 
+        network = os.environ.get("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        if requirement.get("network") != network:
+            raise ValueError("upto challenge does not match X402_HARNESS_NETWORK")
         expires_at = int(time.time()) + int(requirement.get("maxTimeoutSeconds", 300))
         payment_header = build_upto_header(signer, requirement, expires_at)
 

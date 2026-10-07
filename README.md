@@ -153,3 +153,12 @@ and no longer imports capability definitions from outside `x402m-bot`.
 
 Python and adapted specs use [Apache-2.0](python/x402m/LICENSE), with
 [upstream attribution and modification notes](python/x402m/NOTICE).
+
+## Cross-language Pay Kit harnesses
+
+The six [adapted harnesses](harness/README.md) add Kotlin exact/upto clients,
+Python exact/upto/session clients, and a Python loopback server using the supplied
+Pay Kit SDK. They include local signature/transport tests and retain the Solana
+Foundation MIT license. Their exact, upto and MPP session contracts are separate
+from the new SVM batch-settlement profile. See the harness guide for installation,
+source paths and verification boundaries.

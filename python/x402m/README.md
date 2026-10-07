@@ -109,3 +109,10 @@ with the database and does not claim exactly-once execution.
 `types/state.py` and `extension.py` retain Google's source copyright notices;
 other modules are Musebook's replacement Solana integration. Upstream Ethereum
 executors and auto-signing examples were replaced, not relabeled as Solana.
+
+## Pay Kit interoperability harnesses
+
+The [six Pay Kit harnesses](../../harness/README.md) supply Kotlin and Python
+exact/upto clients and Python MPP session/client-server fixtures. Install those
+in their separate environment: they depend on the user-supplied Pay Kit SDK and
+Python 3.11+, and do not replace this package's batch-settlement accounting.

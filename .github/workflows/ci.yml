@@ -31,3 +31,12 @@ jobs:
           pipx run --spec uv uv sync --project python/x402m --extra test --frozen --python '${{ matrix.python-version }}'
           python/x402m/.venv/bin/python -m pytest python/x402m/tests
           python/x402m/.venv/bin/python python/examples/channel_demo.py
+  pay-kit-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Test Python Pay Kit harnesses
+        run: |
+          pipx run --spec uv uv venv --python 3.12 .venv-harness
+          pipx run --spec uv uv pip install --python .venv-harness/bin/python -e ./pay-kit-main/python pytest pytest-asyncio
+          .venv-harness/bin/python -m pytest -p no:pytest_anchorpy harness/tests harness/python-server/test_harness_adapter.py

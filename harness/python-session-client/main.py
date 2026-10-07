@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 
 # Modified for Musebook: resolve the supplied SDK instead of the outer .git root.
@@ -28,6 +28,11 @@ from solana_pay_kit.protocols.mpp.intents.session import (  # noqa: E402
 )
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _request(method: str, url: str, body: dict | None = None, auth: str = ""):
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = Request(url, data=data, method=method)
@@ -36,7 +41,7 @@ def _request(method: str, url: str, body: dict | None = None, auth: str = ""):
     if auth:
         req.add_header("authorization", auth)
     try:
-        response = urlopen(req, timeout=30)
+        response = build_opener(_NoRedirect()).open(req, timeout=30)
         raw = response.read()
         return response.status, {k.lower(): v for k, v in response.headers.items()}, raw
     except HTTPError as err:

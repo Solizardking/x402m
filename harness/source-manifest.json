@@ -1,0 +1,18 @@
+{
+  "source": "User-supplied pay-kit-main",
+  "license": "MIT, Copyright (c) 2026 Solana Foundation",
+  "product": "https://musebook.trade/x402",
+  "files": {
+    "harness/kotlin-x402-client/build.gradle.kts": "cdb98081c9779704a5d511cac473cacadf5c52dac02f982b4902a2ee7901da3f",
+    "harness/kotlin-x402-client/settings.gradle.kts": "fe57ce22007bbc40d6fd381e196ed522dd0b87bfd3bda2c1c8c13fa23285c3a1",
+    "harness/kotlin-x402-client/src/main/kotlin/com/solana/paykit/x402harness/Main.kt": "74b9a7951e02fd33e41e1e68a083d5f8772fa902e619bbb4c88ba25682c26dd4",
+    "harness/kotlin-x402-upto-client/build.gradle.kts": "fc86463cef8de7b9d778819f6a93fa485040e4222dd60b834d2e74d83bb573fc",
+    "harness/kotlin-x402-upto-client/settings.gradle.kts": "8823a0221b3e4b7bc5874e74c18b67d2b86ca195db144eed0165f5791398b7d4",
+    "harness/kotlin-x402-upto-client/src/main/kotlin/com/solana/paykit/x402uptoharness/Main.kt": "ec91c2f214bceec5401ba965bf553004f9b1eb39ee4c3bbc76f05044cd24bd40",
+    "harness/python-session-client/main.py": "bf60909abdf9eaf547d8d68013968c027646ec8b75b58c9e27f6bea044c03a8c",
+    "harness/python-x402-client/main.py": "73ebd26c4a93b292be210cb7ed7e10c41e9f4566462ee7876845b56a34abb6d3",
+    "harness/python-x402-upto-client/main.py": "3f82ffe01cd5e70c1af17a7261e931a71cee468b129097a70d99d9a6afe5fe9c",
+    "harness/python-server/server.py": "20cbb256136ac150b75e03c894665dede437f8af6592a0fec5e03dd0d4ddacd2",
+    "harness/python-server/test_harness_adapter.py": "b2226519635974174f09b46ad92de172107a9f3281337deb453d81fe73a40e0d"
+  }
+}

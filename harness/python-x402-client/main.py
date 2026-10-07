@@ -130,6 +130,9 @@ async def _run() -> None:
             return
 
         rpc = _BlockhashRpc(rpc_url)
+        legacy_network = {DEFAULT_NETWORK: "solana-devnet", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "solana"}.get(network, "")
+        if requirement.get("network") not in (network, legacy_network):
+            raise ValueError("exact challenge does not match X402_HARNESS_NETWORK")
         payment_header = await build_payment_header(signer, rpc, requirement)
 
         paid = await http.get(target_url, headers={PAYMENT_SIGNATURE_HEADER: payment_header})

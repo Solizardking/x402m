@@ -5,6 +5,7 @@ import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.protocols.x402.client.exact.ChallengeSelection
 import com.solana.paykit.protocols.x402.client.exact.X402RpcClient
+import com.solana.paykit.protocols.x402.client.exact.parseX402Challenge
 
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -71,6 +72,7 @@ private fun runAdapter() {
     } else null
 
     val signer = MemorySigner.fromSecretKey(secretKey)
+    val selection = ChallengeSelection(network = network, currencies = currencies)
     val okHttp = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -78,10 +80,22 @@ private fun runAdapter() {
         .callTimeout(150, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
+        .addNetworkInterceptor { chain ->
+            val response = chain.proceed(chain.request())
+            if (response.code == 402) {
+                val headers = response.headers.names().associateWith { response.header(it).orEmpty() }
+                val offer = parseX402Challenge(headers, response.peekBody(1_000_000).string(), selection)
+                val legacyNetwork = if (network == DEFAULT_NETWORK) "solana-devnet" else "solana"
+                if (offer != null && offer.network !in listOf(network, legacyNetwork)) {
+                    response.close()
+                    throw java.io.IOException("exact challenge does not match X402_HARNESS_NETWORK")
+                }
+            }
+            response
+        }
         .build()
 
     val rpcClient = X402RpcClient(rpcUrl, okHttp)
-    val selection = ChallengeSelection(network = network, currencies = currencies)
     val client = PayKitClient.Builder()
         .signer(signer)
         .okHttpClient(okHttp)

@@ -88,6 +88,11 @@ private fun runAdapter() {
         return
     }
 
+    val network = System.getenv("X402_HARNESS_NETWORK")?.takeIf { it.isNotBlank() }
+        ?: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+    require(requirement.network.caip2 == network) {
+        "upto challenge does not match X402_HARNESS_NETWORK"
+    }
     val expiresAt = System.currentTimeMillis() / 1000L +
         (requirement.maxTimeoutSeconds.takeIf { it > 0 } ?: DEFAULT_MAX_TIMEOUT_SECONDS)
     val paymentHeader = buildUptoHeader(signer, requirement, expiresAt)
