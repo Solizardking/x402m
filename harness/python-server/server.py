@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -287,7 +288,7 @@ class _Adapter:
         # Pubkey mode: the literal scenario mint pubkey is the MPP currency.
         self.mint = require_env("MPP_HARNESS_MINT")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
-        secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key")
+        secret = optional_env("MPP_HARNESS_SECRET_KEY", secrets.token_hex(32))
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
@@ -335,7 +336,7 @@ class _Adapter:
         self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
         pay_to = require_env("MPP_HARNESS_PAY_TO")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
-        secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad")
+        secret = optional_env("MPP_HARNESS_SECRET_KEY", secrets.token_hex(32))
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()

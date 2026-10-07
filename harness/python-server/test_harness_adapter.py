@@ -51,7 +51,7 @@ def _fake_keypair_json() -> str:
 @pytest.fixture
 def adapter_env() -> dict[str, str]:
     return {
-        **os.environ,
+        "PATH": os.environ.get("PATH", ""),
         "MPP_HARNESS_RPC_URL": "http://127.0.0.1:8899",
         "MPP_HARNESS_NETWORK": "localnet",
         "MPP_HARNESS_MINT": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
