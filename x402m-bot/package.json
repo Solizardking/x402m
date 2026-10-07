@@ -18,7 +18,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@open-wallet-standard/core": "1.4.3",
-    "@solana/web3.js": "1.98.4",
+    "@solana/web3.js": "^3.0.0",
     "bs58": "6.0.0"
   },
   "repository": {
