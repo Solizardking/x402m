@@ -92,3 +92,15 @@ URL returned 403 on that sweep, and the old markdown URL timed out. Neither
 result established usable facilitator discovery. The snapshot contains no agent
 identities or credentials. These are availability checks, not evidence of funded
 settlement, AI inference or an audit. Recheck discovery when integrating.
+
+## SVM channel batch-settlement adaptation
+
+The new [Solana schemes](../schemes/README.md),
+[composition spec](../spec/v0.1/spec.md), and
+[Python implementation](../python/x402m/README.md) adapt the supplied A2A x402
+structure to Musebook, with the full user-supplied SVM channel scheme preserved.
+Escrow channels and cumulative vouchers are distinct from the historical
+eight-transfer batch. Python supports wire validation, cryptography, canonical
+PDA derivation and durable offchain accounting; onchain facilitator adapters
+remain required. [Dated advertisement observations](batch-settlement-status.json)
+are read-only and do not establish settlement or hosted channel support.

@@ -1,0 +1,36 @@
+{
+  "name": "paykit-playground-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:sdk": "pnpm -C .. prepare:sdk",
+    "predev": "pnpm prepare:sdk",
+    "dev": "vite",
+    "dev:prepared": "vite",
+    "prebuild": "pnpm prepare:sdk",
+    "build": "tsc --noEmit && vite build",
+    "build:prepared": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "@solana-program/token": "^0.11.0",
+    "@solana/kit": "^6.5.0",
+    "@solana/mpp": "link:../../typescript/packages/mpp",
+    "@solana/pay-kit": "link:../../typescript/packages/pay-kit",
+    "highlight.js": "^11.11.1",
+    "mppx": "^0.8.15",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^9.0.1",
+    "react-router-dom": "^7.13.1",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

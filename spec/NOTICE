@@ -1,0 +1,4 @@
+Musebook adaptation, 2026-10-07. Structure and payment lifecycle adapted from
+the supplied Google A2A x402 extension (Apache-2.0). The SVM channel contract
+is preserved from the user-supplied SVM batch-settlement scheme.
+Modified for Solana, x402m/1 and https://musebook.trade/x402.

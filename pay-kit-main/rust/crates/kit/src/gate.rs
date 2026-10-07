@@ -1,0 +1,1620 @@
+//! Unified, protocol-agnostic payment gate for axum.
+//!
+//! A single gated route speaks **both** MPP charge and x402. An unpaid request
+//! gets a 402 carrying both challenges — the MPP `WWW-Authenticate` header and
+//! the x402 `PAYMENT-REQUIRED` header — and the client pays with whichever
+//! protocol it supports. The headers are disjoint, so the paid request is
+//! unambiguous: an `Authorization: Payment` credential is verified as MPP, a
+//! `PAYMENT-SIGNATURE` / `X-PAYMENT` header as x402.
+//!
+//! ```no_run
+//! use solana_pay_kit::{paid_get, PayKit, PayKitConfig, Payment};
+//! use axum::Router;
+//!
+//! async fn report(payment: Payment) -> String {
+//!     format!("paid {} via {}: {}", payment.amount, payment.protocol, payment.reference)
+//! }
+//!
+//! let pay = PayKit::new(PayKitConfig {
+//!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+//!     ..Default::default()
+//! })
+//! .unwrap();
+//!
+//! // One line gates the route on either protocol.
+//! let app: Router = Router::new().route("/report", paid_get(report, "0.10", &pay));
+//! ```
+
+use std::sync::{Arc, Mutex};
+
+use axum::body::{to_bytes, Body, HttpBody};
+use axum::extract::{FromRequestParts, Request, State};
+use axum::handler::Handler;
+use axum::http::request::Parts;
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
+use axum::middleware::{from_fn_with_state, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, MethodRouter};
+
+use crate::core::tx::TxV1Mode;
+use crate::mpp::server::{Config as MppConfig, Mpp};
+use crate::mpp::solana_keychain::TransactionSigner;
+use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
+use crate::x402::server::{
+    BatchAccess, BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig,
+    UptoPayout, VerifiedExactPayment, X402BatchSettlement, X402Upto, X402,
+};
+use crate::x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
+
+const PAYMENT_RECEIPT_HEADER: &str = "Payment-Receipt";
+
+/// Marks a response whose authorization was already charged and served.
+const PAYMENT_REPLAY_HEADER: HeaderName = HeaderName::from_static("payment-replay");
+
+/// Avoid turning the channel store into an unbounded response-body cache.
+const MAX_CACHED_RESPONSE_BYTES: u64 = 1024 * 1024;
+
+/// Error returned when a [`PayKit`] can't be built from its config.
+#[derive(Debug)]
+pub enum PayKitError {
+    /// The MPP charge handler rejected the config.
+    Mpp(String),
+    /// The x402 handler rejected the config.
+    X402(String),
+}
+
+impl std::fmt::Display for PayKitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mpp(e) => write!(f, "MPP config error: {e}"),
+            Self::X402(e) => write!(f, "x402 config error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for PayKitError {}
+
+/// Shared configuration that derives both an MPP charge handler and an x402
+/// handler, so one [`PayKit`] gate accepts either protocol.
+///
+/// The defaults mirror the per-protocol crates: USDC, six decimals, mainnet.
+/// Set [`fee_payer_signer`](Self::fee_payer_signer) to sponsor network fees —
+/// it drives MPP's fee-sponsored mode and supplies x402's fee-payer address.
+pub struct PayKitConfig {
+    /// The merchant wallet address that receives payment.
+    pub recipient: String,
+    /// Currency symbol or mint address (default `"USDC"`).
+    pub currency: String,
+    /// Token decimals for `currency` (default `6`).
+    pub decimals: u8,
+    /// Network: `"mainnet"`, `"devnet"`, or `"localnet"` (default `"mainnet"`).
+    pub network: String,
+    /// RPC endpoint; falls back to a per-network default when `None`.
+    pub rpc_url: Option<String>,
+    /// MPP HMAC challenge-binding secret (>= 32 bytes). Reads `MPP_SECRET_KEY`
+    /// when `None`.
+    pub challenge_binding_secret: Option<String>,
+    /// When set, the server sponsors the network fee: drives MPP fee-sponsored
+    /// mode and is used as the x402 fee-payer address.
+    pub fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
+    /// Accept push-mode MPP credentials (off by default; see audit §13.5).
+    pub accept_push_mode: bool,
+    /// Currencies the server is willing to accept (x402 multi-currency).
+    pub accepted_currencies: Option<Vec<String>>,
+    /// Whether version-1 transactions (SIMD-0385) are accepted, advertised
+    /// and used for settlement. `Auto` probes the feature gate once.
+    pub tx_v1: TxV1Mode,
+}
+
+impl Default for PayKitConfig {
+    fn default() -> Self {
+        Self {
+            recipient: String::new(),
+            currency: "USDC".to_string(),
+            decimals: 6,
+            network: "mainnet".to_string(),
+            rpc_url: None,
+            challenge_binding_secret: None,
+            fee_payer_signer: None,
+            accept_push_mode: false,
+            accepted_currencies: None,
+            tx_v1: TxV1Mode::Auto,
+        }
+    }
+}
+
+/// A dual-protocol payment gate.
+///
+/// Holds an MPP charge handler and an x402 handler derived from a single
+/// [`PayKitConfig`]. Hand a reference to [`paid_get`] / [`paid_post`] to gate a
+/// route on either protocol. Cheap to clone (two `Arc`s).
+#[derive(Clone)]
+pub struct PayKit {
+    mpp: Arc<Mpp>,
+    x402: Arc<X402>,
+    /// Usage-based x402 `upto` handler. `Some` only when `fee_payer_signer` is
+    /// set — the operator signs `settle_and_seal` as the zero-share channel
+    /// payee and, by default, the settlement vouchers, so `upto` routes
+    /// require a signer.
+    x402_upto: Option<Arc<X402Upto>>,
+    /// High-throughput x402 `batch-settlement` handler. `Some` only when
+    /// `fee_payer_signer` is set (the operator signs settlement transactions).
+    x402_batch: Option<Arc<X402BatchSettlement>>,
+}
+
+/// Default `upto` completion window (seconds) advertised in `maxTimeoutSeconds`.
+const UPTO_MAX_TIMEOUT_SECONDS: u64 = 300;
+
+impl PayKit {
+    /// Build both protocol handlers from one config.
+    pub fn new(config: PayKitConfig) -> Result<Self, PayKitError> {
+        // x402's fee payer is an address; derive it from the shared signer so a
+        // single config configures fee sponsorship for both protocols.
+        let fee_payer_key = config
+            .fee_payer_signer
+            .as_ref()
+            .map(|s| s.pubkey().to_string());
+
+        // Map the gate's own currency fields into the x402 servers' currency
+        // list. When `accepted_currencies` is set it is the full universe of
+        // offered symbols (its first entry is the primary); otherwise the gate
+        // offers a single currency. Each entry inherits the gate's `decimals`
+        // and derives its token program from the symbol.
+        let currencies: Vec<CurrencyConfig> = match config.accepted_currencies.as_ref() {
+            Some(list) if !list.is_empty() => list
+                .iter()
+                .map(|currency| CurrencyConfig {
+                    currency: currency.clone(),
+                    decimals: config.decimals,
+                    token_program: None,
+                })
+                .collect(),
+            _ => vec![CurrencyConfig {
+                currency: config.currency.clone(),
+                decimals: config.decimals,
+                token_program: None,
+            }],
+        };
+
+        let mpp = Mpp::new(MppConfig {
+            recipient: config.recipient.clone(),
+            currency: config.currency.clone(),
+            decimals: config.decimals,
+            network: config.network.clone(),
+            rpc_url: config.rpc_url.clone(),
+            challenge_binding_secret: config.challenge_binding_secret.clone(),
+            fee_payer: config.fee_payer_signer.is_some(),
+            fee_payer_signer: config.fee_payer_signer.clone(),
+            accept_push_mode: config.accept_push_mode,
+            ..Default::default()
+        })
+        .map_err(|e| PayKitError::Mpp(e.to_string()))?
+        .with_tx_v1(config.tx_v1);
+
+        let x402 = X402::new(X402Config {
+            recipient: config.recipient.clone(),
+            currencies: currencies.clone(),
+            network: config.network.clone(),
+            rpc_url: config.rpc_url.clone(),
+            fee_payer_key,
+            ..Default::default()
+        })
+        .map_err(|e| PayKitError::X402(e.to_string()))?
+        .with_tx_v1(config.tx_v1);
+
+        // The `upto` scheme needs an operator signer to sign `settle_and_seal`
+        // (as the zero-share channel payee) and the settlement vouchers, so it
+        // is only available when the gate sponsors fees with a signer.
+        let x402_upto = config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| {
+                X402Upto::new(UptoConfig {
+                    payout: UptoPayout::Beneficiary {
+                        address: config.recipient.clone(),
+                    },
+                    currencies: currencies.clone(),
+                    cluster: config.network.clone(),
+                    rpc_url: config.rpc_url.clone(),
+                    resource: String::new(),
+                    description: None,
+                    max_timeout_seconds: UPTO_MAX_TIMEOUT_SECONDS,
+                    program_id: None,
+                    withdraw_delay: 0,
+                    fee_payer_signer: signer.clone(),
+                    receiver_authorizer_signer: None,
+                })
+                .map(|upto| Arc::new(upto.with_tx_v1(config.tx_v1)))
+                .map_err(|e| PayKitError::X402(e.to_string()))
+            })
+            .transpose()?;
+
+        // `batch-settlement` likewise needs an operator signer for settlement.
+        let x402_batch = config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| {
+                let mut batch = BatchConfig::new(
+                    config.recipient.clone(),
+                    config.network.clone(),
+                    signer.clone(),
+                );
+                batch.currency = config.currency.clone();
+                batch.decimals = config.decimals;
+                batch.rpc_url = config.rpc_url.clone();
+                X402BatchSettlement::new(batch)
+                    .map(|batch| Arc::new(batch.with_tx_v1(config.tx_v1)))
+                    .map_err(|e| PayKitError::X402(e.to_string()))
+            })
+            .transpose()?;
+
+        Ok(Self {
+            mpp: Arc::new(mpp),
+            x402: Arc::new(x402),
+            x402_upto,
+            x402_batch,
+        })
+    }
+
+    /// The underlying MPP charge handler.
+    pub fn mpp(&self) -> &Arc<Mpp> {
+        &self.mpp
+    }
+
+    /// The underlying x402 handler.
+    pub fn x402(&self) -> &Arc<X402> {
+        &self.x402
+    }
+
+    /// The underlying x402 `upto` handler, when a fee-payer signer is configured.
+    pub fn x402_upto(&self) -> Option<&Arc<X402Upto>> {
+        self.x402_upto.as_ref()
+    }
+
+    /// The underlying x402 `batch-settlement` handler, when a fee-payer signer is
+    /// configured. Drive `claim` / `settle` and close lifecycle work out of band.
+    pub fn x402_batch(&self) -> Option<&Arc<X402BatchSettlement>> {
+        self.x402_batch.as_ref()
+    }
+}
+
+/// The protocol a [`Payment`] was made with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    /// Machine Payments Protocol (charge intent).
+    Mpp,
+    /// x402 (exact scheme).
+    X402,
+}
+
+impl std::fmt::Display for Protocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Mpp => "mpp",
+            Self::X402 => "x402",
+        })
+    }
+}
+
+/// A verified payment, injected by [`paid_get`] / [`paid_post`] and available
+/// as a handler argument.
+///
+/// Infallible on a protected route: the gate returns 402 before the handler
+/// runs, so the payment is always present.
+#[derive(Clone, Debug)]
+pub struct Payment {
+    /// The price the route charged (dollar string, e.g. `"0.10"`).
+    pub amount: String,
+    /// Which protocol the client paid with.
+    pub protocol: Protocol,
+    /// Settlement reference — the MPP receipt reference or the x402 signature.
+    pub reference: String,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Payment {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts.extensions.get::<Payment>().cloned().ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Payment extractor used on a route not gated by paid_get/paid_post",
+            )
+                .into_response()
+        })
+    }
+}
+
+/// Usage meter for [`paid_upto_get`] / [`paid_upto_post`] routes.
+///
+/// The route handler reports the actual amount consumed (in base units) by
+/// calling [`Charge::charge`]. The gate settles that amount — never more than
+/// the authorized ceiling — after the handler returns, refunding the remainder.
+/// If the handler never calls `charge`, the settled amount is `0`.
+#[derive(Clone)]
+pub struct Charge {
+    cell: Arc<Mutex<Option<u64>>>,
+    max_base_units: u64,
+}
+
+impl Charge {
+    /// Record the actual amount consumed, in token base units. Values above the
+    /// authorized maximum are clamped to it.
+    pub fn charge(&self, base_units: u64) {
+        let clamped = base_units.min(self.max_base_units);
+        // Recover from a poisoned lock (a panicked handler) rather than dropping
+        // the charge — otherwise a panic after `charge()` would settle for zero.
+        *self.cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(clamped);
+    }
+
+    /// The authorized maximum for this request, in base units.
+    pub fn max_base_units(&self) -> u64 {
+        self.max_base_units
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Charge {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts.extensions.get::<Charge>().cloned().ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Charge extractor used on a route not gated by paid_upto_get/paid_upto_post",
+            )
+                .into_response()
+        })
+    }
+}
+
+/// The price a [`paid_get`] / [`paid_post`] route charges: a fixed amount or a
+/// per-request closure.
+///
+/// A `&str` or `String` converts straight into a fixed price, so the common
+/// case reads as `paid_get(handler, "0.10", &pay)`. For per-request pricing use
+/// [`Price::dynamic`].
+#[derive(Clone)]
+pub enum Price {
+    /// A fixed dollar amount (e.g. `"0.10"`).
+    Fixed(Arc<str>),
+    /// Per-request pricing from a closure of the request context.
+    Dynamic(Arc<dyn Fn(&PriceCtx<'_>) -> String + Send + Sync>),
+}
+
+impl Price {
+    /// Build a per-request price from a closure.
+    pub fn dynamic<F>(f: F) -> Self
+    where
+        F: Fn(&PriceCtx<'_>) -> String + Send + Sync + 'static,
+    {
+        Self::Dynamic(Arc::new(f))
+    }
+
+    fn resolve(&self, ctx: &PriceCtx<'_>) -> String {
+        match self {
+            Self::Fixed(amount) => amount.to_string(),
+            Self::Dynamic(f) => f(ctx),
+        }
+    }
+}
+
+impl From<&str> for Price {
+    fn from(amount: &str) -> Self {
+        Self::Fixed(Arc::from(amount))
+    }
+}
+
+impl From<String> for Price {
+    fn from(amount: String) -> Self {
+        Self::Fixed(Arc::from(amount.as_str()))
+    }
+}
+
+impl std::fmt::Debug for Price {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fixed(amount) => f.debug_tuple("Fixed").field(amount).finish(),
+            Self::Dynamic(_) => f.write_str("Dynamic(<closure>)"),
+        }
+    }
+}
+
+/// Read-only view of the request passed to a [`Price::dynamic`] closure.
+pub struct PriceCtx<'a> {
+    /// The request method.
+    pub method: &'a Method,
+    /// The request URI (path and query).
+    pub uri: &'a Uri,
+    /// The request headers.
+    pub headers: &'a HeaderMap,
+}
+
+impl PriceCtx<'_> {
+    /// The raw query string, if present.
+    pub fn query(&self) -> Option<&str> {
+        self.uri.query()
+    }
+
+    /// Look up a single query parameter by name, percent-decoded.
+    ///
+    /// The value is `application/x-www-form-urlencoded`-decoded (`%XX` escapes
+    /// and `+` as space) so a tier like `?tier=premi%75m` matches a literal
+    /// `"premium"` comparison instead of silently falling through to a cheaper
+    /// default price.
+    pub fn query_param(&self, name: &str) -> Option<String> {
+        self.uri.query()?.split('&').find_map(|pair| {
+            let mut kv = pair.splitn(2, '=');
+            match kv.next() {
+                Some(key) if key == name => Some(percent_decode(kv.next().unwrap_or(""))),
+                _ => None,
+            }
+        })
+    }
+}
+
+/// Decode an `application/x-www-form-urlencoded` query value: `%XX` escapes and
+/// `+` as space. Pricing closures compare decoded values, so a percent-encoded
+/// tier (e.g. `premi%75m`) can't bypass the match and land on a cheaper price.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                match (
+                    (bytes[i + 1] as char).to_digit(16),
+                    (bytes[i + 2] as char).to_digit(16),
+                ) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[derive(Clone)]
+struct GateState {
+    pay: PayKit,
+    price: Price,
+}
+
+/// Build the 402 response carrying *both* protocol challenges.
+fn challenge_response(pay: &PayKit, amount: &str) -> Response {
+    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    let headers = resp.headers_mut();
+
+    // MPP: WWW-Authenticate. A failure here drops the MPP challenge from the
+    // 402 (x402 clients are unaffected), so log it for operators.
+    match pay.mpp.charge(amount) {
+        Ok(challenge) => match format_www_authenticate(&challenge) {
+            Ok(www_auth) => match HeaderValue::from_str(&www_auth) {
+                Ok(v) => {
+                    headers.insert(header::WWW_AUTHENTICATE, v);
+                }
+                Err(e) => {
+                    tracing::warn!(amount = %amount, error = %e, "invalid MPP challenge header value")
+                }
+            },
+            Err(e) => {
+                tracing::warn!(amount = %amount, error = %e, "failed to format MPP challenge")
+            }
+        },
+        Err(e) => tracing::warn!(amount = %amount, error = %e, "failed to build MPP challenge"),
+    }
+
+    // x402: PAYMENT-REQUIRED.
+    match pay
+        .x402
+        .payment_required_header(amount, ExactOptions::default())
+    {
+        Ok((name, value)) => match (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            (Ok(n), Ok(v)) => {
+                headers.insert(n, v);
+            }
+            _ => tracing::warn!(amount = %amount, "invalid x402 PAYMENT-REQUIRED header"),
+        },
+        Err(e) => tracing::warn!(amount = %amount, error = %e, "failed to build x402 challenge"),
+    }
+
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+fn attach_mpp_receipt(resp: &mut Response, receipt: &Receipt) {
+    let kind = ReceiptKind::Charge(receipt.clone());
+    if let Ok(value) = format_receipt(&kind) {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(PAYMENT_RECEIPT_HEADER.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            resp.headers_mut().insert(n, v);
+        }
+    }
+}
+
+/// Extract a settlement reference from a verified x402 payment. Returns `None`
+/// when the transaction carries no signature (an unsigned tx), so the gate can
+/// reject rather than hand the handler an empty reference.
+fn x402_reference(verified: &VerifiedExactPayment) -> Option<String> {
+    let reference = match verified {
+        VerifiedExactPayment::Signature(sig) => sig.clone(),
+        VerifiedExactPayment::Transaction(tx) => tx
+            .signatures
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+    };
+    (!reference.is_empty()).then_some(reference)
+}
+
+fn attach_x402_response(resp: &mut Response, reference: &str) {
+    if let (Ok(n), Ok(v)) = (
+        HeaderName::from_bytes(PAYMENT_RESPONSE_HEADER.as_bytes()),
+        HeaderValue::from_str(reference),
+    ) {
+        resp.headers_mut().insert(n, v);
+    }
+}
+
+async fn gate_middleware(State(state): State<GateState>, mut req: Request, next: Next) -> Response {
+    // Resolve the price first — dynamic routes price off the request, and the
+    // resolved amount is what each protocol pins the credential against.
+    let amount = {
+        let ctx = PriceCtx {
+            method: req.method(),
+            uri: req.uri(),
+            headers: req.headers(),
+        };
+        state.price.resolve(&ctx)
+    };
+
+    // Detect the protocol from disjoint headers.
+    let mpp_credential = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| s.starts_with("Payment "))
+        .map(str::to_string);
+
+    let x402_header = req
+        .headers()
+        .get(PAYMENT_SIGNATURE_HEADER)
+        .or_else(|| req.headers().get(X402_V1_PAYMENT_HEADER))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    // MPP path.
+    if let Some(credential) = mpp_credential {
+        return match state
+            .pay
+            .mpp
+            .verify_payment_for_amount(&credential, &amount)
+            .await
+        {
+            Ok(receipt) => {
+                req.extensions_mut().insert(Payment {
+                    amount,
+                    protocol: Protocol::Mpp,
+                    reference: receipt.reference.clone(),
+                });
+                let mut resp = next.run(req).await;
+                attach_mpp_receipt(&mut resp, &receipt);
+                resp
+            }
+            Err(_) => challenge_response(&state.pay, &amount),
+        };
+    }
+
+    // x402 path.
+    if let Some(header_value) = x402_header {
+        return match state
+            .pay
+            .x402
+            .process_payment(&header_value, &amount, ExactOptions::default())
+            .await
+        {
+            Ok(verified) => match x402_reference(&verified) {
+                Some(reference) => {
+                    req.extensions_mut().insert(Payment {
+                        amount,
+                        protocol: Protocol::X402,
+                        reference: reference.clone(),
+                    });
+                    let mut resp = next.run(req).await;
+                    attach_x402_response(&mut resp, &reference);
+                    resp
+                }
+                None => {
+                    tracing::warn!(
+                        amount = %amount,
+                        "x402 payment verified but carried no settlement reference"
+                    );
+                    challenge_response(&state.pay, &amount)
+                }
+            },
+            Err(_) => challenge_response(&state.pay, &amount),
+        };
+    }
+
+    // No credential of either protocol — advertise both challenges.
+    challenge_response(&state.pay, &amount)
+}
+
+/// Gate a `GET` handler behind payment verification at `price`, accepting
+/// either MPP charge or x402.
+pub fn paid_get<H, T, S>(handler: H, price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    get(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: price.into(),
+        },
+        gate_middleware,
+    ))
+}
+
+/// Gate a `POST` handler behind payment verification at `price`, accepting
+/// either MPP charge or x402.
+pub fn paid_post<H, T, S>(handler: H, price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: price.into(),
+        },
+        gate_middleware,
+    ))
+}
+
+/// Build the 402 response advertising the x402 `upto` challenge.
+///
+/// If the challenge can't be built — e.g. the operator's RPC is down so no
+/// recent blockhash is available — return a retryable `503` instead of a `402`
+/// carrying no challenge the client could act on.
+fn upto_challenge_response(upto: &X402Upto, amount: &str) -> Response {
+    let (name, value) = match upto.payment_required_header(amount) {
+        Ok(header) => header,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "failed to build upto challenge");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "payment challenge temporarily unavailable",
+            )
+                .into_response();
+        }
+    };
+    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    match (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(&value),
+    ) {
+        (Ok(n), Ok(v)) => {
+            resp.headers_mut().insert(n, v);
+        }
+        _ => tracing::warn!(amount = %amount, "invalid x402 upto PAYMENT-REQUIRED header"),
+    }
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// Usage-based gate: verify the authorization and broadcast the channel open,
+/// run the handler, then settle the actual metered amount and refund the rest.
+async fn upto_gate_middleware(
+    State(state): State<GateState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let amount = {
+        let ctx = PriceCtx {
+            method: req.method(),
+            uri: req.uri(),
+            headers: req.headers(),
+        };
+        state.price.resolve(&ctx)
+    };
+
+    let Some(upto) = state.pay.x402_upto.clone() else {
+        tracing::error!("paid_upto route used but no fee_payer_signer configured");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "upto routes require a fee_payer_signer",
+        )
+            .into_response();
+    };
+
+    let x402_header = req
+        .headers()
+        .get(PAYMENT_SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let Some(header_value) = x402_header else {
+        return upto_challenge_response(&upto, &amount);
+    };
+
+    // Verify the authorization and broadcast + confirm the channel open.
+    let open = match upto.verify_open(&header_value, &amount).await {
+        Ok(open) => open,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "upto open verification failed");
+            return upto_challenge_response(&upto, &amount);
+        }
+    };
+
+    // Run the handler with a usage meter; default to a zero charge.
+    let cell = Arc::new(Mutex::new(None));
+    let charge = Charge {
+        cell: cell.clone(),
+        max_base_units: open.max_amount,
+    };
+    req.extensions_mut().insert(Payment {
+        amount: amount.clone(),
+        protocol: Protocol::X402,
+        reference: open.channel_id.to_string(),
+    });
+    req.extensions_mut().insert(charge);
+    let mut resp = next.run(req).await;
+
+    // Recover from poisoning so a handler that panicked *after* recording a
+    // charge still settles the amount it consumed (not a silent zero refund).
+    let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
+
+    // Settle the actual amount and refund the remainder.
+    match upto.settle_actual(&open, actual).await {
+        Ok(settlement) => match upto.settlement_header(&settlement) {
+            Ok((name, value)) => {
+                if let (Ok(n), Ok(v)) = (
+                    HeaderName::from_bytes(name.as_bytes()),
+                    HeaderValue::from_str(&value),
+                ) {
+                    resp.headers_mut().insert(n, v);
+                }
+                resp
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to encode upto settlement header");
+                resp
+            }
+        },
+        Err(e) => {
+            tracing::error!(actual, error = %e, "upto settlement failed after handler ran");
+            (
+                StatusCode::BAD_GATEWAY,
+                "payment settlement failed; the channel can be reclaimed after its grace period",
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Gate a `GET` handler behind x402 `upto` (usage-based) payment at the given
+/// **maximum** price. The handler reports actual usage via the [`Charge`]
+/// extractor; the gate settles that amount and refunds the rest.
+///
+/// Requires a `fee_payer_signer` on [`PayKitConfig`] (the operator signs the
+/// settlement, as the channel's zero-share payee, and the vouchers).
+pub fn paid_upto_get<H, T, S>(
+    handler: H,
+    max_price: impl Into<Price>,
+    pay: &PayKit,
+) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    get(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: max_price.into(),
+        },
+        upto_gate_middleware,
+    ))
+}
+
+/// Gate a `POST` handler behind x402 `upto` (usage-based) payment at the given
+/// **maximum** price. See [`paid_upto_get`].
+pub fn paid_upto_post<H, T, S>(
+    handler: H,
+    max_price: impl Into<Price>,
+    pay: &PayKit,
+) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: max_price.into(),
+        },
+        upto_gate_middleware,
+    ))
+}
+
+/// Build the 402 advertising the x402 `batch-settlement` challenge, or a
+/// retryable `503` if it can't be built (e.g. the operator RPC is down).
+///
+/// `failure` carries the rejected payment header and its error, so a cumulative
+/// mismatch is answered with the corrective challenge the client resynchronizes
+/// from instead of a bare re-offer it would fail against again.
+async fn batch_challenge_response(
+    batch: &X402BatchSettlement,
+    amount: &str,
+    resource: Option<&str>,
+    failure: Option<(&str, crate::x402::Error)>,
+) -> Response {
+    let header = match failure {
+        Some((payment_header, error)) => {
+            batch
+                .challenge_for_failure(payment_header, amount, &error, resource)
+                .await
+        }
+        None => batch.payment_required_header(amount, resource),
+    };
+    let (name, value) = match header {
+        Ok(header) => header,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "failed to build batch-settlement challenge");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "payment challenge temporarily unavailable",
+            )
+                .into_response();
+        }
+    };
+    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    if let (Ok(n), Ok(v)) = (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(&value),
+    ) {
+        resp.headers_mut().insert(n, v);
+    }
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// The absolute URL of the routed request, for the x402 v2 `resource` field.
+///
+/// A request line usually carries only a path, so the authority comes from the
+/// forwarded scheme and `Host`. Both are client-supplied; the resource is an
+/// identifier echoed in the challenge, not a trust anchor — what a voucher
+/// authorizes is bound to the channel and the price, never to this string.
+fn resource_url(req: &Request) -> Option<String> {
+    let uri = req.uri();
+    if uri.authority().is_some() {
+        return Some(uri.to_string());
+    }
+    let host = req.headers().get(header::HOST)?.to_str().ok()?;
+    let scheme = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("https");
+    Some(format!("{scheme}://{host}{}", uri.path_and_query()?))
+}
+
+/// Answer a request whose authorization was already charged and served.
+///
+/// The payment result is authoritative and is returned verbatim. When the
+/// original resource response was cached, restore that representation too.
+fn replayed_response(
+    batch: &X402BatchSettlement,
+    settlement: &crate::x402::batch_settlement::BatchSettlementResponse,
+    cached: Option<&crate::core::store::CachedUpstreamResponse>,
+) -> Response {
+    let mut resp = if let Some(cached) = cached {
+        let status = StatusCode::from_u16(cached.status).unwrap_or(StatusCode::OK);
+        let mut response = (status, cached.body.clone()).into_response();
+        if let Some(content_type) = &cached.content_type {
+            if let Ok(value) = HeaderValue::from_str(content_type) {
+                response.headers_mut().insert(header::CONTENT_TYPE, value);
+            }
+        }
+        for (name, value) in &cached.headers {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                response.headers_mut().append(name, value);
+            }
+        }
+        response
+    } else {
+        StatusCode::OK.into_response()
+    };
+    resp.headers_mut()
+        .insert(PAYMENT_REPLAY_HEADER, HeaderValue::from_static("true"));
+    attach_settlement_header(batch, settlement, &mut resp);
+    resp
+}
+
+/// Headers whose meaning belongs to the stored representation rather than to
+/// this particular transport hop or payment attempt.
+fn is_replayable_response_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "accept-ranges"
+            | "cache-control"
+            | "content-security-policy"
+            | "content-security-policy-report-only"
+            | "content-disposition"
+            | "content-encoding"
+            | "content-language"
+            | "content-location"
+            | "content-range"
+            | "cross-origin-embedder-policy"
+            | "cross-origin-opener-policy"
+            | "cross-origin-resource-policy"
+            | "etag"
+            | "expires"
+            | "last-modified"
+            | "location"
+            | "permissions-policy"
+            | "referrer-policy"
+            | "reporting-endpoints"
+            | "strict-transport-security"
+            | "vary"
+            | "x-content-type-options"
+            | "x-frame-options"
+            | "x-permitted-cross-domain-policies"
+            | "x-xss-protection"
+    )
+}
+
+/// Buffer a small, finite handler response so an authorization replay can
+/// return the same representation. Streaming and large responses pass through
+/// untouched and retain settlement-only replay semantics.
+async fn cacheable_response(
+    response: Response,
+) -> Result<(Response, Option<crate::core::store::CachedUpstreamResponse>), axum::Error> {
+    let size = response.body().size_hint();
+    if size
+        .upper()
+        .is_none_or(|upper| upper > MAX_CACHED_RESPONSE_BYTES)
+    {
+        return Ok((response, None));
+    }
+
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, MAX_CACHED_RESPONSE_BYTES as usize).await?;
+    let content_type = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let headers = parts
+        .headers
+        .iter()
+        .filter(|(name, _)| is_replayable_response_header(name))
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect();
+    let cached = crate::core::store::CachedUpstreamResponse {
+        status: parts.status.as_u16(),
+        content_type,
+        headers,
+        body: bytes.to_vec(),
+    };
+    Ok((Response::from_parts(parts, Body::from(bytes)), Some(cached)))
+}
+
+/// High-throughput gate for x402 `batch-settlement`, under the scheme's
+/// `authorization` payment flow.
+///
+/// The authorization is reserved durably before the handler runs, and charged
+/// only after it succeeds — so a failed handler leaves the client uncharged and
+/// free to retry the same voucher, a successful one is charged exactly once,
+/// and a crash in between can only finish the charge, never re-serve.
+///
+/// Onchain redemption is deferred: drive `claim` / `settle` out of band via
+/// [`PayKit::x402_batch`].
+async fn batch_gate_middleware(
+    State(state): State<GateState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let amount = {
+        let ctx = PriceCtx {
+            method: req.method(),
+            uri: req.uri(),
+            headers: req.headers(),
+        };
+        state.price.resolve(&ctx)
+    };
+
+    let Some(batch) = state.pay.x402_batch.clone() else {
+        tracing::error!("paid_batch route used but no fee_payer_signer configured");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "batch-settlement routes require a fee_payer_signer",
+        )
+            .into_response();
+    };
+
+    let x402_header = req
+        .headers()
+        .get(PAYMENT_SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let resource = resource_url(&req);
+    let Some(header_value) = x402_header else {
+        return batch_challenge_response(&batch, &amount, resource.as_deref(), None).await;
+    };
+
+    let access = match batch
+        .verify_and_reserve_payment(&header_value, &amount)
+        .await
+    {
+        Ok(access) => access,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "batch-settlement verification failed");
+            // A cumulative mismatch comes back as a corrective 402 carrying the
+            // server's snapshot, so the client can resynchronize and retry.
+            return batch_challenge_response(
+                &batch,
+                &amount,
+                resource.as_deref(),
+                Some((&header_value, e)),
+            )
+            .await;
+        }
+    };
+
+    let outcome = match access {
+        // Already charged and served. The client lost the response, not the
+        // payment, so it gets the original result — never a second charge and
+        // never a second execution.
+        BatchAccess::Replay(settlement, cached) => {
+            return replayed_response(&batch, &settlement, cached.as_ref());
+        }
+
+        // Another in-flight request owns this authorization. The retryable
+        // scheme code is the body so a client can act on it without parsing
+        // prose.
+        BatchAccess::InProgress => {
+            let mut resp = (
+                StatusCode::CONFLICT,
+                crate::x402::batch_settlement::errors::DUPLICATE_SETTLEMENT,
+            )
+                .into_response();
+            resp.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            return resp;
+        }
+
+        // An earlier attempt's handler already succeeded; only its charge is
+        // unfinished. Finishing it is the one safe continuation.
+        BatchAccess::Resume(outcome) => {
+            return match batch.finish_commit(&outcome).await {
+                Ok(settlement) => replayed_response(&batch, &settlement, None),
+                Err(e) => {
+                    tracing::error!(error = %e, "batch-settlement commit could not be resumed");
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "payment authorization could not be committed",
+                    )
+                        .into_response()
+                }
+            };
+        }
+
+        // A refund is a payment-control operation, not a paid request: the
+        // application handler is bypassed entirely.
+        BatchAccess::Control(outcome) => {
+            return match batch.settle_payment(outcome).await {
+                Ok(settlement) => {
+                    let mut resp = (StatusCode::OK, "channel close initiated").into_response();
+                    attach_settlement_header(&batch, &settlement, &mut resp);
+                    resp
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "batch-settlement refund failed");
+                    (StatusCode::BAD_GATEWAY, "channel close failed").into_response()
+                }
+            };
+        }
+
+        BatchAccess::Serve(outcome) => outcome,
+    };
+
+    let channel_id = outcome.channel_id.clone();
+    req.extensions_mut().insert(Payment {
+        amount: amount.clone(),
+        protocol: Protocol::X402,
+        reference: channel_id.clone(),
+    });
+    let resp = next.run(req).await;
+
+    // A handler that failed charges nothing: release the authorization so the
+    // same voucher can be presented again.
+    if !resp.status().is_success() {
+        if let Err(e) = batch.release_authorization(outcome).await {
+            tracing::error!(
+                channel = %channel_id,
+                error = %e,
+                "batch-settlement authorization could not be released after a failed handler"
+            );
+            // The reservation stands, and an unreleased one is never taken
+            // over — serving another request on it would run the handler
+            // twice. The client is uncharged but this voucher is spent.
+            return (
+                StatusCode::BAD_GATEWAY,
+                "payment authorization could not be released; this voucher cannot be reused",
+            )
+                .into_response();
+        }
+        return resp;
+    }
+
+    let (mut resp, cached) = match cacheable_response(resp).await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(channel = %channel_id, error = %error, "could not buffer handler response for replay");
+            (
+                (StatusCode::BAD_GATEWAY, "resource response body failed").into_response(),
+                None,
+            )
+        }
+    };
+
+    // The crash boundary: past this point a retry may only finish the charge.
+    //
+    // A marker that fails to write is not a reason to abandon the charge. This
+    // process watched the handler succeed; the marker only makes that durable
+    // for a crash, and committing needs the reservation, not the marker. So a
+    // failure here is logged and the charge is attempted anyway — otherwise a
+    // store hiccup would serve the request for free and leave the client's
+    // channel stuck at a watermark nothing can advance.
+    if let Err(e) = batch.mark_handler_succeeded(&outcome).await {
+        tracing::error!(
+            channel = %channel_id,
+            error = %e,
+            "batch-settlement could not record a served handler; charging anyway"
+        );
+    }
+
+    match commit_served_request(&batch, &outcome, &channel_id).await {
+        Ok(settlement) => {
+            if let Some(cached) = cached {
+                if let Err(error) = batch.cache_response(&outcome, cached).await {
+                    tracing::warn!(
+                        channel = %channel_id,
+                        error = %error,
+                        "batch-settlement response cache write failed"
+                    );
+                }
+            }
+            attach_settlement_header(&batch, &settlement, &mut resp);
+            resp
+        }
+        Err(e) => {
+            // The handler already ran, so the client must not be told this
+            // succeeded: a retry finishes the charge without re-serving.
+            tracing::error!(
+                channel = %channel_id,
+                error = %e,
+                "batch-settlement commit failed after the resource was served"
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                "payment authorization could not be committed; retry the same voucher",
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Attempts a served request's charge is willing to make before giving up.
+const COMMIT_ATTEMPTS: u32 = 3;
+
+/// Charge a request whose handler has already run, retrying a store that is
+/// only briefly unavailable.
+///
+/// This is the last write standing between a served request and the payment
+/// for it, and it is idempotent: committing an authorization that is already
+/// committed leaves it alone, and a deposit's setup transaction is recovered
+/// by its signature rather than broadcast again. So a store that blinks costs
+/// a little latency instead of the charge.
+///
+/// What no number of attempts can cover is a store that stays unavailable, or
+/// a process that exits mid-charge. Nothing durable can be written then, and
+/// the authorization stays unreported — which a later retry treats as
+/// terminal rather than serving it a second time. That direction is
+/// deliberate: the scheme requires that one authorization never runs the
+/// handler twice, so an outage costs the operator a served request rather
+/// than costing the payer a duplicate execution.
+async fn commit_served_request(
+    batch: &X402BatchSettlement,
+    outcome: &crate::x402::server::BatchOutcome,
+    channel_id: &str,
+) -> Result<crate::x402::batch_settlement::BatchSettlementResponse, crate::x402::Error> {
+    let mut last = None;
+    for attempt in 1..=COMMIT_ATTEMPTS {
+        match batch.finish_commit(outcome).await {
+            Ok(settlement) => return Ok(settlement),
+            Err(error) => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    attempt,
+                    error = %error,
+                    "batch-settlement charge failed; retrying"
+                );
+                last = Some(error);
+                if attempt < COMMIT_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * u64::from(attempt)))
+                        .await;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| crate::x402::Error::Other("commit did not run".into())))
+}
+
+/// Attach the `PAYMENT-RESPONSE` settlement header to `resp`.
+fn attach_settlement_header(
+    batch: &X402BatchSettlement,
+    response: &crate::x402::batch_settlement::BatchSettlementResponse,
+    resp: &mut Response,
+) {
+    let Ok((name, value)) = batch.settlement_header(response) else {
+        return;
+    };
+    if let (Ok(n), Ok(v)) = (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(&value),
+    ) {
+        resp.headers_mut().insert(n, v);
+    }
+}
+
+/// Gate a `GET` handler behind x402 `batch-settlement` at the per-request
+/// `price`. Requires a `fee_payer_signer`; settlement is batched out of band.
+pub fn paid_batch_get<H, T, S>(handler: H, price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    get(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: price.into(),
+        },
+        batch_gate_middleware,
+    ))
+}
+
+/// Gate a `POST` handler behind x402 `batch-settlement`. See [`paid_batch_get`].
+pub fn paid_batch_post<H, T, S>(
+    handler: H,
+    price: impl Into<Price>,
+    pay: &PayKit,
+) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: price.into(),
+        },
+        batch_gate_middleware,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::Router;
+    use tower::ServiceExt; // oneshot
+
+    const TEST_RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+    const TEST_SECRET: &str = "paykit-gate-test-secret-key-with-32b-padding";
+
+    fn test_paykit() -> PayKit {
+        PayKit::new(PayKitConfig {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .expect("valid paykit config")
+    }
+
+    async fn report(_payment: Payment) -> &'static str {
+        "ok"
+    }
+
+    fn test_signer() -> Arc<dyn TransactionSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Arc::new(crate::mpp::solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    /// PayKit with an operator signer (enables `upto`). A bogus RPC URL makes
+    /// the recent-blockhash fetch fail fast — so the challenge can't be built
+    /// offline and the gate surfaces a retryable 503.
+    fn upto_paykit() -> PayKit {
+        PayKit::new(PayKitConfig {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            fee_payer_signer: Some(test_signer()),
+            ..Default::default()
+        })
+        .expect("valid paykit config")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_upto_without_signer_returns_500() {
+        // No fee_payer_signer → no upto handler → misconfiguration surfaces as 500.
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/u", paid_upto_get(report, "1.00", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/u").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_upto_unpaid_returns_503_when_challenge_rpc_unavailable() {
+        // With the operator RPC unreachable, no recent blockhash can be embedded
+        // in the challenge, so the gate returns a retryable 503 rather than a
+        // 402 carrying a challenge the in-SDK client could not act on.
+        let pay = upto_paykit();
+        let app: Router = Router::new().route("/u", paid_upto_get(report, "1.00", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/u").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_batch_without_signer_returns_500() {
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/b", paid_batch_get(report, "0.01", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/b").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_batch_unpaid_returns_503_when_challenge_rpc_unavailable() {
+        // The batch challenge embeds a recent blockhash; with the operator RPC
+        // unreachable the gate returns a retryable 503 rather than a 402.
+        let pay = upto_paykit();
+        let app: Router = Router::new().route("/b", paid_batch_get(report, "0.01", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/b").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    fn ctx<'a>(method: &'a Method, uri: &'a Uri, headers: &'a HeaderMap) -> PriceCtx<'a> {
+        PriceCtx {
+            method,
+            uri,
+            headers,
+        }
+    }
+
+    #[test]
+    fn price_fixed_from_str() {
+        let method = Method::GET;
+        let uri: Uri = "/x".parse().unwrap();
+        let headers = HeaderMap::new();
+        assert_eq!(
+            Price::from("0.10").resolve(&ctx(&method, &uri, &headers)),
+            "0.10"
+        );
+    }
+
+    #[test]
+    fn price_dynamic_reads_query_param() {
+        let price = Price::dynamic(|c| match c.query_param("tier").as_deref() {
+            Some("premium") => "5.00".to_string(),
+            _ => "0.10".to_string(),
+        });
+        let method = Method::GET;
+        let headers = HeaderMap::new();
+        let premium: Uri = "/q?tier=premium".parse().unwrap();
+        assert_eq!(price.resolve(&ctx(&method, &premium, &headers)), "5.00");
+        let basic: Uri = "/q".parse().unwrap();
+        assert_eq!(price.resolve(&ctx(&method, &basic, &headers)), "0.10");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unpaid_returns_402_with_both_protocol_challenges() {
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/r").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+        // Both protocol challenges are advertised.
+        assert!(resp.headers().contains_key(header::WWW_AUTHENTICATE));
+        assert!(resp.headers().contains_key("payment-required"));
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn payment_extractor_without_gate_is_500() {
+        // The Payment extractor on an ungated route has no extension to read.
+        let app: Router = Router::new().route("/r", get(report));
+        let resp = app
+            .oneshot(Request::builder().uri("/r").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mpp_cross_route_replay_returns_402() {
+        use crate::mpp::{format_authorization, PaymentCredential};
+
+        let pay = test_paykit();
+        // A credential minted for the $0.01 route...
+        let cheap = pay.mpp().charge("0.01").unwrap();
+        let cred = PaymentCredential::new(
+            cheap.to_echo(),
+            serde_json::json!({"type": "signature", "signature": "fakesig"}),
+        );
+        let auth = format_authorization(&cred).unwrap();
+
+        // ...must not be accepted on the $1.00 route.
+        let app: Router = Router::new().route("/r", paid_get(report, "1.00", &pay));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/r")
+                    .header(header::AUTHORIZATION, auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+    }
+
+    #[test]
+    fn query_param_percent_decodes() {
+        // A percent-encoded tier must decode so it can't dodge the premium
+        // price by landing on the cheaper default.
+        let price = Price::dynamic(|c| match c.query_param("tier").as_deref() {
+            Some("premium") => "5.00".to_string(),
+            _ => "0.10".to_string(),
+        });
+        let method = Method::GET;
+        let headers = HeaderMap::new();
+        let encoded: Uri = "/q?tier=premi%75m".parse().unwrap();
+        assert_eq!(price.resolve(&ctx(&method, &encoded, &headers)), "5.00");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn x402_invalid_signature_returns_402() {
+        // A PAYMENT-SIGNATURE header that doesn't verify takes the x402 path
+        // and is rejected with a fresh 402 (it must not fall through to MPP).
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/r")
+                    .header("PAYMENT-SIGNATURE", "not-a-valid-x402-envelope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+    }
+
+    #[tokio::test]
+    async fn batch_response_cache_keeps_representation_headers_only() {
+        let mut response = (StatusCode::TEMPORARY_REDIRECT, "moved").into_response();
+        response
+            .headers_mut()
+            .insert(header::LOCATION, HeaderValue::from_static("/destination"));
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=report.txt"),
+        );
+        response.headers_mut().insert(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'"),
+        );
+        response.headers_mut().insert(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        );
+        response.headers_mut().insert(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        );
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        response.headers_mut().insert(
+            HeaderName::from_static("payment-response"),
+            HeaderValue::from_static("attempt-specific"),
+        );
+
+        let (_, cached) = cacheable_response(response).await.unwrap();
+        let cached = cached.expect("small finite response is cached");
+        assert_eq!(cached.status, StatusCode::TEMPORARY_REDIRECT.as_u16());
+        assert!(cached
+            .headers
+            .contains(&("location".to_string(), "/destination".to_string())));
+        assert!(cached.headers.contains(&(
+            "content-disposition".to_string(),
+            "attachment; filename=report.txt".to_string()
+        )));
+        assert!(cached.headers.contains(&(
+            "content-security-policy".to_string(),
+            "default-src 'none'".to_string()
+        )));
+        assert!(cached
+            .headers
+            .contains(&("x-content-type-options".to_string(), "nosniff".to_string())));
+        assert!(cached
+            .headers
+            .contains(&("x-frame-options".to_string(), "DENY".to_string())));
+        assert!(!cached.headers.iter().any(|(name, _)| name == "connection"));
+        assert!(!cached
+            .headers
+            .iter()
+            .any(|(name, _)| name == "payment-response"));
+        assert_eq!(cached.body, b"moved");
+    }
+}

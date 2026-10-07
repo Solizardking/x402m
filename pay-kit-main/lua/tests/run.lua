@@ -1,0 +1,66 @@
+-- No `./` prefix on these patterns. Lua resolves the relative paths the
+-- same way either way, but the prefix leaks into `debug.getinfo().source`
+-- and coverage tooling keys its per-file stats off that string. LuaCov's
+-- pure-Lua hook strips a leading `./`; the C hook from `cluacov` does not,
+-- so a prefixed path makes every file show up twice in the report (once
+-- with real hit counts, once as a 0% "untested" entry discovered by the
+-- filesystem walk) and halves the reported total.
+package.path = table.concat({
+  '?.lua',
+  '?/init.lua',
+  'lua/?.lua',
+  'lua/?/init.lua',
+  package.path,
+}, ';')
+
+require('tests.network_check_spec')
+require('tests.core_spec')
+require('tests.json_canonical_rfc8785_spec')
+require('tests.expires_rfc3339_spec')
+require('tests.server_spec')
+require('tests.solana_verify_spec')
+require('tests.mpp_rust_parity_spec')
+require('tests.html_spec')
+require('tests.cross_route_replay_spec')
+require('tests.rpc_spec')
+require('tests.charge_handler_spec')
+require('tests.util_base58_spec')
+require('tests.util_base64_std_spec')
+require('tests.methods_solana_transaction_spec')
+require('tests.methods_solana_instructions_spec')
+require('tests.methods_solana_ata_spec')
+require('tests.methods_solana_signer_spec')
+require('tests.methods_solana_verifier_spec')
+require('tests.solana_rpc_transport_spec')
+require('tests.solana_rpc_transport_resty_spec')
+require('tests.error_codes_spec')
+require('tests.store_shared_dict_spec')
+require('tests.intents_charge_spec')
+require('tests.json_util_spec')
+
+-- PayKit umbrella suites (P1+).
+require('tests.pay_kit.errors_spec')
+require('tests.pay_kit.kms_spec')
+require('tests.pay_kit.ed25519_spec')
+require('tests.pay_kit.signer_spec')
+require('tests.pay_kit.operator_spec')
+require('tests.pay_kit.price_spec')
+require('tests.pay_kit.config_spec')
+require('tests.pay_kit.gate_spec')
+require('tests.pay_kit.schemes_x402_spec')
+require('tests.pay_kit.x402_verify_spec')
+require('tests.pay_kit.x402_rust_parity_spec')
+require('tests.pay_kit.x402_extensions_spec')
+require('tests.pay_kit.util_reexports_spec')
+require('tests.pay_kit.x402_broadcast_spec')
+require('tests.pay_kit.preflight_spec')
+require('tests.pay_kit.store_spec')
+require('tests.pay_kit.tx_cosign_spec')
+require('tests.pay_kit.dispatcher_spec')
+require('tests.pay_kit.kong_plugin_spec')
+require('tests.pay_kit.kong_plugin_runtime_spec')
+require('tests.pay_kit.apisix_plugin_spec')
+require('tests.pay_kit.apisix_plugin_runtime_spec')
+require('tests.pay_kit.main_fixes_spec')
+
+require('tests.test_helper').run()

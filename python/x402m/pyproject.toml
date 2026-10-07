@@ -5,7 +5,7 @@ description = "Experimental Musebook x402m Agent Auth client and Solana payment 
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
-dependencies = ["httpx>=0.28.1,<1", "cryptography>=44,<47"]
+dependencies = ["httpx>=0.28.1,<1", "cryptography>=44,<47", "solders>=0.26,<1"]
 [project.urls]
 Homepage = "https://musebook.trade/x402"
 Repository = "https://github.com/Solizardking/x402m"

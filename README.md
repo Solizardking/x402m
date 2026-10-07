@@ -119,7 +119,8 @@ fees can be charged even when execution fails.
 Run `npm ci` and `npm test` from the repository root. Tests use fixtures and
 temporary keys/vaults; they do not use a funded wallet or real inference account.
 CI runs on Node.js 24. Package manifests remain private to prevent accidental
-npm publication; the source repository is public under MIT.
+npm publication. The Node source is MIT; the Python adaptation and its adapted
+spec/scheme directories retain Apache-2.0 attribution.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for changes and
 [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
@@ -127,3 +128,28 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for changes and
 ## License
 
 [MIT](LICENSE), copyright 2026 Musebook. Dependencies retain their own licenses.
+
+## Solana Python, schemes and specification
+
+The [Python package](python/x402m/README.md), [schemes](schemes/README.md) and
+[spec](spec/v0.1/spec.md) adapt the supplied `a2a-x402-main` project for
+https://musebook.trade/x402 and authenticated x402m mailboxes. The primary focus
+is the [SVM batch-settlement channel scheme](schemes/scheme_batch_settlement_svm.md):
+canonical PDA derivation, cumulative Ed25519 vouchers, payer proofs, cooperative
+close signatures, local operator policy, durable reservations and replay defense.
+The full supplied scheme is preserved. Onchain transaction/facilitator integration
+is explicitly separate and is not deployed by this change.
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+pip install -e 'python/x402m[test]'
+python -m pytest python/x402m/tests
+python python/examples/channel_demo.py
+```
+
+The Node MCP adapter bundles the original five docs as credential-free resources
+and no longer imports capability definitions from outside `x402m-bot`.
+
+Python and adapted specs use [Apache-2.0](python/x402m/LICENSE), with
+[upstream attribution and modification notes](python/x402m/NOTICE).

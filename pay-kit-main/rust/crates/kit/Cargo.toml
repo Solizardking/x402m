@@ -1,0 +1,252 @@
+[package]
+name = "solana-pay-kit"
+version = "0.10.0"
+edition = "2021"
+description = "Building blocks for Agentic payments (x402, MPP, AP2)"
+license = "MIT"
+repository = "https://github.com/solana-foundation/pay-kit"
+# The SDK guide lives at the workspace README (rust/README.md); reuse it as the
+# published crate README so crates.io renders the same guide.
+readme = "../../README.md"
+
+[package.metadata.docs.rs]
+# The high-level payment client is feature-gated. Build it on docs.rs so the
+# permission API is present in the published crate documentation.
+features = ["client"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["mpp", "x402"]
+# Protocol modules. `mpp`/`x402` gate `pub mod mpp`/`pub mod x402` in lib.rs;
+# both pull in the shared `core` + generated program clients.
+mpp = []
+x402 = []
+# Server-side verification helpers.
+server = []
+# Client-side transaction building + balance-aware `select` (needs serde_json
+# to decode MPP method details).
+client = []
+# The unified axum gate dispatches both protocols, so it needs both modules
+# plus the server side.
+axum = ["mpp", "x402", "server", "dep:axum"]
+# Ergonomic adapters for the official Rust MCP SDK. The core JSON-RPC codec
+# remains available through `mpp::mcp` without pulling rmcp into applications
+# that use another MCP implementation.
+rmcp = ["mpp", "server", "dep:rmcp"]
+gcp_kms = ["solana-keychain/gcp_kms"]
+# Ledger hardware-wallet signing over USB-HID, forwarded from solana-keychain
+# (`pay_kit::solana_keychain::ledger`). Opt-in: it links hidapi, which needs
+# libusb/udev on Linux, so it stays out of every default and `all` build.
+ledger = ["solana-keychain/ledger"]
+# Durable server-side session state. Opt-in so clients and local-only servers
+# do not pull a Redis runtime into their dependency graph.
+redis-store = ["dep:redis"]
+# Token-2022 confidential transfers: ZK proof generation + the Token-2022
+# confidential-transfer instruction builders. Opt-in so non-confidential
+# consumers (mobile/wasm/FFI) stay lean.
+confidential = [
+    "dep:solana-zk-sdk",
+    "dep:spl-token-2022",
+    "dep:spl-token-confidential-transfer-proof-generation",
+    "dep:spl-token-confidential-transfer-proof-extraction",
+    "dep:solana-zk-elgamal-proof-interface",
+    "dep:solana-zk-sdk-pod",
+    "dep:spl-record",
+    "dep:spl-associated-token-account",
+    "dep:bytemuck",
+    "dep:solana-keypair",
+    "dep:solana-signer",
+]
+# Single confidential-settlement worker run-loop (tokio actor) + the orphan
+# sweeper. Needs the server (tokio) + confidential settlement primitives.
+worker = ["confidential", "server"]
+# Settlement test/demo harness (open real channels, fund, drive + observe).
+testkit = []
+# Generated program-client account fetch helpers (RPC). Off by default — the
+# pay-kit protocol layers only use instruction/type builders.
+fetch = ["dep:solana-account"]
+# Opt-in gate for the in-tree confidential-transfer tests that drive the real
+# ZK ElGamal Proof program inside litesvm: `--features confidential,litesvm-tests`.
+litesvm-tests = ["confidential"]
+# Reusable OpenTelemetry init (console + OTLP traces/metrics).
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:opentelemetry-semantic-conventions",
+    "dep:tracing-opentelemetry",
+    "dep:tracing-subscriber",
+]
+
+[dependencies]
+# Signing — solana-keychain 2.x with sdk-v4. 2.0 split transaction signing out
+# of `SolanaSigner` into the `TransactionSigner` capability trait and moved it to
+# `VersionedTransaction`; see core::signing for how the kit adapts. `sdk-v4` is
+# what signs and wire-encodes Transaction V1 (SIMD-0385).
+# solana-keychain 2.0.0-beta.1 on crates.io compiles `sdk-v4` against wincode
+# 0.4; solana-message/-transaction 4.1+ (Transaction V1) use wincode 0.5.
+# keychain main carries the bump but has no release yet, so depend on that
+# commit directly: path and git consumers of the kit inherit it (a workspace
+# `[patch]` would not reach them). `cargo publish` strips the git source and
+# resolves beta.1, which does not compile; publishing waits for beta.2.
+solana-keychain = { version = "2.0.0-beta.1", git = "https://github.com/solana-foundation/solana-keychain", rev = "44b479df245167ca3b3a4e04d6d907146306d342", default-features = false, features = ["memory", "sdk-v4"] }
+
+# Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
+# which solana-keypair/solana-signature rely on.
+five8_core = { version = "=0.1.2", features = ["std"] }
+
+# Solana — atomic crates only. solana-message/-transaction/-hash are on the 4.x
+# line that carries Transaction V1; message stays below 4.5 because 4.5+ needs
+# solana-address 2.7 while litesvm 0.16 pins ~2.6. Interface crates
+# (instruction, pubkey, signature, system-interface) are unchanged on 3.x/2.x —
+# message 4.x still consumes solana-instruction 3.x.
+solana-hash = { version = "4.4", default-features = false }
+solana-instruction = { version = "3.1", default-features = false }
+solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-commitment-config = { version = "3.0", default-features = false }
+solana-rpc-client = { version = "4.1", default-features = false }
+# Request/response types for raw RPC calls: the confidential orphan sweeper's
+# getProgramAccounts scan, and the challenge builders' getLatestBlockhash
+# (whose response context carries the slot embedded as `recentSlot`). Always
+# on — it is already a transitive dep of solana-rpc-client.
+solana-rpc-client-api = { version = "4.1", default-features = false }
+solana-account-decoder-client-types = { version = "4.1", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-system-interface = { version = "2.0", default-features = false }
+solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+# Canonical wire codec for every message version: bincode cannot encode V1.
+wincode = "0.5"
+# transaction-status 4.0 gates its whole lib behind `agave-unstable-api`; the
+# wire types we use live in the stable client-types crate.
+solana-transaction-status-client-types = { version = "4.1", default-features = false }
+solana-zero-copy = { version = "1", default-features = false }
+solana-address = { version = "2", features = ["borsh", "curve25519"] }
+
+# Sharded concurrent map for the in-memory channel store hot path.
+dashmap = "5"
+
+# Generated program-client deps (payment-channels + subscriptions).
+num-derive = "0.4"
+num-traits = "0.2"
+solana-account-info = "^3"
+solana-program-error = "^3"
+solana-cpi = "^3"
+solana-client = "^4.1"
+solana-account = { version = "^4", optional = true }
+
+# Confidential transfers (opt-in via the `confidential` feature).
+solana-zk-sdk = { version = "7.0.1", optional = true }
+spl-token-2022 = { version = "=11.0.0", optional = true, default-features = false, features = ["zk-ops"] }
+spl-token-confidential-transfer-proof-generation = { version = "0.6.1", optional = true }
+spl-token-confidential-transfer-proof-extraction = { version = "0.6", optional = true }
+solana-zk-elgamal-proof-interface = { version = "0.1.2", optional = true }
+solana-zk-sdk-pod = { version = "0.1.1", optional = true }
+spl-record = { version = "0.4.0", optional = true, features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "8.0.0", optional = true, features = ["no-entrypoint"] }
+bytemuck = { version = "1.25", optional = true }
+# Ephemeral keypairs for proof context-state + record accounts (client-side).
+solana-keypair = { version = "3.0", optional = true }
+solana-signer = { version = "3.0", optional = true }
+
+# Async server run-loops + settlement worker.
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client also provides single-attempt pipeline submissions. Keep retries
+# visible to the pipeline's ownership guard instead of the RPC SDK's transport.
+reqwest = { version = "0.12.28", features = ["json", "stream"] }
+
+# Axum extractor / unified gate (opt-in).
+axum = { version = "0.8", optional = true, default-features = false }
+rmcp = { version = "3.5", optional = true, default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+bs58 = "0.5"
+five8 = "1.0"
+base64 = "0.22"
+bincode = "1"
+borsh = { version = "1.0", features = ["derive"] }
+url = "2"
+getrandom = "0.3"
+
+# Crypto (HMAC challenge IDs + SHA-256 distribution hash + voucher verification)
+hmac = "0.12"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "batch"] }
+# Direct dep only to pre-filter degenerate (small-order R) batch-verify inputs
+# the same way ed25519-dalek's own `verify_strict` does internally; version
+# must track whatever ed25519-dalek 2.x pins so the same curve point type
+# flows through both without a second copy of the crate.
+curve25519-dalek = { version = "4", default-features = false }
+
+# Time (expiration, timestamps)
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+# Observability
+tracing = "0.1"
+async-trait = "0.1"
+redis = { version = "0.32.5", optional = true, features = ["tokio-rustls-comp", "connection-manager"] }
+
+# OpenTelemetry (feature `otel`) — optional.
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["logs"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"], optional = true }
+opentelemetry-appender-tracing = { version = "0.31", optional = true }
+opentelemetry-semantic-conventions = { version = "0.31", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+# Errors
+thiserror = "2"
+
+[dev-dependencies]
+# litesvm 0.16 shares the kit's solana-address pins, so it can be a plain
+# dev-dependency; it executes version-1 transactions and the ZK ElGamal Proof
+# program, which the `litesvm-tests` confidential tests rely on.
+litesvm = "0.16"
+tokio = { version = "1", features = ["full"] }
+rmcp = { version = "3.5", default-features = false, features = ["client", "server"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+serde_json = "1"
+ed25519-dalek = "2"
+base64 = "0.22"
+# Atomic solana crates the in-tree examples / unit tests import directly.
+solana-hash = { version = "4.4", default-features = false }
+solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-system-interface = { version = "2.0", default-features = false }
+solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+
+[[example]]
+name = "axum_quickstart"
+required-features = ["axum"]
+
+[[example]]
+name = "axum_upto"
+required-features = ["axum"]
+
+[[example]]
+name = "axum_batch"
+required-features = ["axum"]
+
+[[example]]
+name = "golden_tx"
+required-features = ["mpp", "client"]
+
+[[example]]
+name = "payment_link_server"
+required-features = ["mpp", "axum"]
+
+[[example]]
+name = "protocol_runner"
+required-features = ["mpp"]
+
+[[test]]
+name = "kotlin_golden_vector"
+required-features = ["x402"]

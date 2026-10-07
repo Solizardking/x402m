@@ -1,0 +1,32 @@
+name: iOS Demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'swift/Examples/PayKitDemo/**'
+      - 'swift/Sources/**'
+      - '.github/workflows/ios-demo.yml'
+  pull_request:
+    paths:
+      - 'swift/Examples/PayKitDemo/**'
+      - 'swift/Sources/**'
+      - '.github/workflows/ios-demo.yml'
+  workflow_call:
+
+jobs:
+  build-ios-demo:
+    name: iOS demo build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build PayKitDemo for iOS Simulator
+        working-directory: swift/Examples/PayKitDemo
+        run: |
+          xcodebuild \
+            -scheme PayKitDemo \
+            -project PayKitDemo.xcodeproj \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build

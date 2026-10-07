@@ -1,0 +1,4 @@
+[submodule "typescript/external/x402"]
+	path = typescript/external/x402
+	url = https://github.com/x402-foundation/x402.git
+	branch = main

@@ -1,0 +1,29 @@
+{
+  "checkedAt": "2026-10-07T20:17:21.850879+00:00",
+  "source": "https://musebook.trade/api/x402/supported",
+  "verification": "Read-only GET; no signatures, deposits, messages or settlement",
+  "batchSettlementAdvertised": false,
+  "solanaKinds": [
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+    },
+    {
+      "x402Version": 2,
+      "scheme": "upto",
+      "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "extra": {
+        "feePayer": "AeWfNCLkjU9hLR8RQmVdL3hrfKT7qmEnGwLhH726yv9Y"
+      },
+      "signers": [
+        "AeWfNCLkjU9hLR8RQmVdL3hrfKT7qmEnGwLhH726yv9Y"
+      ]
+    }
+  ]
+}

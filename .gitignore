@@ -24,3 +24,11 @@ state.json.tmp
 artifacts/
 dist/
 .DS_Store
+
+# Python development and package artifacts.
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+*.pyc
+.ruff_cache/

@@ -1,0 +1,50 @@
+name: Setup PayKit harness leg
+description: >-
+  Install the harness against prebuilt @solana/mpp and optional native/JVM
+  adapters. This action never builds SDKs or adapters.
+
+inputs:
+  native-artifact:
+    description: >-
+      Artifact containing adapters.tar.gz for this platform. Empty skips native
+      adapters, for builder jobs that only need the portable TypeScript output.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Download prebuilt @solana/mpp dist
+      uses: actions/download-artifact@v7
+      with:
+        name: mpp-dist
+        path: typescript/packages/mpp/dist
+    - uses: pnpm/action-setup@v5
+      with:
+        package_json_file: package.json
+    - uses: actions/setup-node@v5
+      with:
+        node-version-file: .node-version
+        cache: pnpm
+        cache-dependency-path: typescript/pnpm-lock.yaml
+    - name: Download prebuilt adapters
+      if: inputs.native-artifact != ''
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.native-artifact }}
+        path: .harness-download
+    - name: Unpack executable adapters
+      if: inputs.native-artifact != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/.harness-artifacts"
+        tar -xzf "$GITHUB_WORKSPACE/.harness-download/adapters.tar.gz" -C "$GITHUB_WORKSPACE/.harness-artifacts"
+        echo "HARNESS_PREBUILT_DIR=$GITHUB_WORKSPACE/.harness-artifacts" >> "$GITHUB_ENV"
+    - name: Install harness
+      working-directory: harness
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Keep dependency installation outside adapter processes
+      shell: bash
+      run: echo "pnpm_config_verify_deps_before_run=false" >> "$GITHUB_ENV"

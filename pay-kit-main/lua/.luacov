@@ -1,0 +1,30 @@
+-- LuaCov configuration for the Lua MPP SDK.
+--
+-- The harness is invoked from the `lua/` working directory, so source file
+-- paths reported by luacov are relative to that directory (e.g. `pay_kit/foo`).
+-- Include the SDK source tree, exclude test specs and the auto-generated
+-- HTML asset bundle, and emit the report one level up so the coverage gate
+-- script can read it consistently.
+return {
+  statsfile = "../luacov.stats.out",
+  reportfile = "../luacov.report.out",
+  include = {
+    "pay_kit$",
+    "pay_kit/.+",
+    "plugins/kong/plugins/pay%-kit/.+",
+    "plugins/apisix/plugins/pay%-kit$",
+    "plugins/resty/pay%-kit$",
+  },
+  exclude = {
+    "tests/.+",
+    "pay_kit/protocols/mpp/server/html_assets/gen$",
+  },
+  includeuntestedfiles = {
+    "pay_kit",
+    "plugins/kong/plugins/pay-kit",
+    "plugins/apisix/plugins",
+    "plugins/resty",
+  },
+  runreport = false,
+  deletestats = false,
+}
