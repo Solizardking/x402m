@@ -1,0 +1,7 @@
+Musebook x402m Solana adaptation, 2026-10-07.
+Adapted from the supplied a2a-x402-main (Google A2A / Coinbase Developer Platform).
+PaymentStatus and x402Metadata derive from Google LLC copyright 2025 source.
+Extension declaration helpers derive from Google LLC copyright 2025 source.
+Changes: Musebook extension identifier, Solana-only contracts, x402m Agent Auth
+transport, explicit wallet adapters, and confirmation-gated execution.
+Original Apache-2.0 license is retained in LICENSE.

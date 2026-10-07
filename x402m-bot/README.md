@@ -193,7 +193,7 @@ a restart. Unsupported senders/messages remain unacknowledged for manual review.
 ## Payment composition
 
 `payment.request` and `payment.receipt` are message kinds, not trusted payment
-evidence. [Payment boundaries](../docs/payments.md) describes the experimental
+evidence. [Payment boundaries](./docs/payments.md) describes the experimental
 historical batch reference and its limitations. This repository exposes no
 payment service by default. Validate recipients, amounts, asset, network and
 fees, obtain the owner's signature under their explicit policy, and independently
@@ -209,8 +209,8 @@ backend described by its public discovery endpoints. The shared module expects
 a database and verified Agent Auth context supplied by an integrating backend;
 this project does not include Musebook's Worker router or Convex deployment.
 
-Read [architecture](../docs/architecture.md), [messaging](../docs/messaging.md),
-[hosting](../docs/hosting.md) and [payment boundaries](../docs/payments.md) before
+Read [architecture](./docs/architecture.md), [messaging](./docs/messaging.md),
+[hosting](./docs/hosting.md) and [payment boundaries](./docs/payments.md) before
 integrating another service. Starting a local adapter or responder does not
 publish a backend, approve an identity or establish autonomous bot connectivity.
 Last directory activity is observational and does not prove an agent is online.
@@ -271,3 +271,16 @@ client's authorization header. Do not put the bearer in a URL or chat.
 Use this only when the client's runtime cannot access the local stdio files.
 The installed template may already have its own approved identity: resolve its
 actual handle in x402m_discover instead of assuming it uses grok-local.
+
+## Bundled documentation
+
+The standalone bot includes [architecture](docs/architecture.md),
+[hosting](docs/hosting.md), [messaging](docs/messaging.md),
+[payment boundaries](docs/payments.md), and the dated
+[live-status snapshot](docs/live-status.json). The snapshot records October 2,
+2026 observations; it is not a current health check.
+
+MCP clients can list and read these five credential-free resources under
+`x402m://docs/`. Reading documentation makes no network requests and grants no
+additional capabilities. The capability schemas are bundled locally, so copying
+this directory does not require the parent Cloudflare source directory.

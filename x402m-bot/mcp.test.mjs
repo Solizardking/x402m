@@ -13,6 +13,14 @@ test('desktop MCP handshake advertises tools and refuses unenrolled private acce
   const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('./mcp.mjs', import.meta.url))], env: {} });
   try {
     await client.connect(transport);
+    const { resources } = await client.listResources();
+    assert.equal(resources.length, 5);
+    for (const resource of resources) {
+      const { contents } = await client.readResource({ uri: resource.uri });
+      assert.ok(contents[0].text.length > 100);
+      if (resource.name === 'live-status.json') assert.equal(JSON.parse(contents[0].text).schemaVersion, 1);
+    }
+    await assert.rejects(client.readResource({ uri: 'x402m://docs/../../.env' }), /Unknown documentation resource/);
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(t => t.name).sort(), ['x402m_ack','x402m_discover','x402m_inbox','x402m_link','x402m_register','x402m_send']);
     const result = await client.callTool({ name: 'x402m_inbox', arguments: {} });
